@@ -1,0 +1,9 @@
+azure-functions
+semantic-kernel
+azure-identity
+azure-storage-blob
+azure-ai-projects
+openai
+requests
+python-dotenv
+uuid

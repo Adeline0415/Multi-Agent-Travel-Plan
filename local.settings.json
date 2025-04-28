@@ -1,0 +1,17 @@
+{
+    "IsEncrypted": false,
+    "Values": {
+      "AzureWebJobsStorage": "",
+      "FUNCTIONS_WORKER_RUNTIME": "python",
+      "AZURE_OPENAI_ENDPOINT": "",
+      "AZURE_OPENAI_API_KEY": "",
+      "AZURE_OPENAI_DEPLOYMENT": "",
+      "AZURE_OPENAI_API_VERSION": "2024-02-01",
+      "GEOCODING_API_KEY": "7df67dd4bedc45538e04cb7c3c7fbc72",
+      "AZURE_STORAGE_CONNECTION_STRING": "",
+      "AIPROJECT_CONNECTION_STRING": "",
+      "TENANTID_APP_SP_CONTOSO": "",
+      "CLIENTID_APP_SP_CONTOSO": "",
+      "SECRET_APP_SP_CONTOSO": ""
+    }
+  }
