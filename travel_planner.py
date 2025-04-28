@@ -24,7 +24,8 @@ from util import AzureBlobManager
 
 # Configure logging
 import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+# 設置更高的日誌等級，只顯示警告和錯誤
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class TravelPlanningTerminationStrategy(TerminationStrategy):
@@ -162,11 +163,14 @@ class TravelPlanningSystem:
             instructions=f"""
             Today is {current_date}. 你是一位擁有超過20年經驗的氣象專業知識旅遊顧問，擅長根據即時與預測天氣，
             協助使用者動態調整每日行程安排。你的任務是：
-            1. 使用get_weather_forecast工具並根據指定日期與實際地點（如：新宿、淺草、六本木、迪士尼樂園）的天氣資訊，提出合適的行程建議。
+            1. 你**必須**使用 `get_weather_forecast` 工具根據實際地點（如：新宿、淺草、六本木、迪士尼樂園）來查詢天氣資料，不能自行假設天氣。
             2. 請避免使用籠統的地名如「Tokyo」查詢天氣，而應以每日實際行程地點為查詢依據。
             3. 若天氣不佳（如下雨、強風、酷暑），請建議更換為室內景點，
             4. 若天氣良好，則可推薦戶外行程。
+            5. 請根據使用者的行程安排，提供具體的建議與替代方案，並附上天氣預報資料。
+
             建議內容需具體、合理，並配合使用者原本的動線與住宿位置，避免增加移動成本與轉乘。
+            **Important:** You must always call the `get_weather_forecast` tool whenever you need weather information, and never fabricate weather data yourself.
             """,
             tools=[{
                 "type": "function",
@@ -207,7 +211,7 @@ class TravelPlanningSystem:
             若天氣不佳（如下雨、強風、酷暑），請更換為室內景點，
             若天氣良好，則可更換為戶外行程。
             行程內容需具體、合理，並配合使用者原本的動線與住宿位置，避免增加移動成本與轉乘。
-            You can use the code interpreter tool to generate visual itineraries, maps, charts, or any other helpful visualizations.
+            You can write the complete file generation code that include final travel plan and execute it using the code interpreter tool to generate visual itineraries, maps, charts, or any other helpful visualizations.
             YOUR FINAL RESPONSE MUST BE THE COMPLETE PLAN. When the plan is complete and all perspectives are integrated, you can respond with TERMINATE.
             """,
             tools=code_interpreter.definitions,
@@ -268,40 +272,47 @@ class TravelPlanningSystem:
                     print(f"# {content.role} - {content.name or '*'}: '{content.content}'")
                     
                     # Handle tool calls for weather agent
-                    if content.name == "WeatherAdvisorAgent" and content.tool_calls:
-                        for tool_call in content.tool_calls:
-                            if tool_call.function.name == "get_weather_forecast":
-                                args = json.loads(tool_call.function.arguments)
-                                weather_result = self.weather_service.get_weather_forecast(
-                                    location_name=args.get("location_name"),
-                                    start_date=args.get("start_date"),
-                                    end_date=args.get("end_date")
-                                )
-                                # Add tool result back to chat
-                                await chat.add_chat_message(
-                                    message=weather_result,
-                                    role="tool",
-                                    tool_call_id=tool_call.id
-                                )
+                    try:
+                        if content.name == "WeatherAdvisorAgent" and hasattr(content, 'tool_calls') and content.tool_calls:
+                            for tool_call in content.tool_calls:
+                                if tool_call.function.name == "get_weather_forecast":
+                                    args = json.loads(tool_call.function.arguments)
+                                    weather_result = self.weather_service.get_weather_forecast(
+                                        location_name=args.get("location_name"),
+                                        start_date=args.get("start_date"),
+                                        end_date=args.get("end_date")
+                                    )
+                                    # Add tool result back to chat
+                                    await chat.add_chat_message(
+                                        message=weather_result,
+                                        role="tool",
+                                        tool_call_id=tool_call.id
+                                    )
+                    except AttributeError as e:
+                        print(f"處理工具調用時出錯: {e}")
                     
                     # Handle code interpreter results
-                    if content.file_path_annotations:
-                        for file_path_annotation in content.file_path_annotations:
-                            file_ext = file_path_annotation.text.split('.')[-1]
-                            data_bytes = b''.join(client.agents.get_file_content(
-                                file_id=file_path_annotation.file_path.file_id
-                            ))
-                            
-                            file_name = os.path.basename(file_path_annotation.text)
-                            timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-                            new_file_name = f"{timestamp}-{file_name}"
-                            
-                            image_url = self.blob_manager.upload_blob(
-                                data=data_bytes,
-                                file_name=new_file_name,
-                                content_type=self._get_mime_type(file_ext)
-                            )
-                            file_urls.append(image_url)
+                    try:
+                        if hasattr(content, 'file_path_annotations') and content.file_path_annotations:
+                            for file_path_annotation in content.file_path_annotations:
+                                file_ext = file_path_annotation.text.split('.')[-1]
+                                data_bytes = b''.join(client.agents.get_file_content(
+                                    file_id=file_path_annotation.file_path.file_id
+                                ))
+                                
+                                file_name = os.path.basename(file_path_annotation.text)
+                                timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+                                new_file_name = f"{timestamp}-{file_name}"
+                                
+                                image_url = self.blob_manager.upload_blob(
+                                    data=data_bytes,
+                                    file_name=new_file_name,
+                                    content_type=self._get_mime_type(file_ext)
+                                )
+                                file_urls.append(image_url)
+                    except AttributeError:
+                        # 如果沒有file_path_annotations屬性，跳過這部分
+                        pass
                     
                     # Store the final response
                     if content.name == "TravelSummaryAgent" and "TERMINATE" in content.content:
