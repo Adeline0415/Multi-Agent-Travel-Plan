@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 from typing import List, Dict, Any, Tuple
 import uuid
+from typing import Annotated
 
 # Azure AI SDK imports
 from azure.identity import ClientSecretCredential
@@ -15,6 +16,8 @@ from azure.ai.projects.models import CodeInterpreterTool
 from semantic_kernel.agents import AgentGroupChat, AzureAIAgent, AzureAIAgentSettings
 from semantic_kernel.agents.strategies import TerminationStrategy
 from semantic_kernel.contents import AuthorRole
+from semantic_kernel.functions import kernel_function
+from semantic_kernel import Kernel
 
 # Weather API imports
 import requests
@@ -49,7 +52,7 @@ class TravelPlanningTerminationStrategy(TerminationStrategy):
         return False
 
 class WeatherService:
-    """Service for weather-related functions."""
+    """Service for weather-related functions"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -71,7 +74,7 @@ class WeatherService:
             return lat, lon
         else:
             raise Exception("Geocoding API request failed")
-    
+
     def get_weather_forecast(self, location_name: str, start_date: str, end_date: str) -> str:
         """Get the weather forecast for a given location and date range."""
         try:
@@ -156,6 +159,24 @@ class TravelPlanningSystem:
         )
         routemaster_agent = AzureAIAgent(client=client, definition=routemaster_definition)
         
+        class WeatherPlugin:
+            def __init__(self, weather_service):
+                self.weather_service = weather_service
+                
+            @kernel_function(
+                description="Get weather forecast for a location",
+                name="get_weather_forecast"
+            )
+            def get_weather_forecast(self, 
+                                    location_name: Annotated[str, "The name of the location"],
+                                    start_date: Annotated[str, "Start date in YYYY-MM-DD format"],
+                                    end_date: Annotated[str, "End date in YYYY-MM-DD format"]) -> str:
+                """Get the weather forecast for a given location and date range."""
+                return self.weather_service.get_weather_forecast(location_name, start_date, end_date)
+
+        # 創建插件實例
+        weather_plugin = WeatherPlugin(self.weather_service)
+
         # 3. Weather Advisor Agent (with tools)
         weather_advisor_definition = await client.agents.create_agent(
             model=self.config["MODEL_DEPLOYMENT_NAME"],
@@ -198,8 +219,14 @@ class TravelPlanningSystem:
                 }
             }]
         )
-        weather_advisor_agent = AzureAIAgent(client=client, definition=weather_advisor_definition)
+
         
+        weather_advisor_agent = AzureAIAgent(
+            client=client, 
+            definition=weather_advisor_definition,
+            plugins=[weather_plugin]  # 在這裡添加插件
+        )
+
         # 4. Travel Summary Agent (with code interpreter)
         code_interpreter = CodeInterpreterTool()
         summary_agent_definition = await client.agents.create_agent(
