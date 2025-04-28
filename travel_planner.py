@@ -45,9 +45,9 @@ class TravelPlanningTerminationStrategy(TerminationStrategy):
         if agent.name == "TravelSummaryAgent" and "TERMINATE" in last_message.content:
             return True
             
-        # Also terminate if we reach a certain number of iterations
-        if len(history) > 20:  # Prevent infinite loops
-            return True
+        # # Also terminate if we reach a certain number of iterations
+        # if len(history) > 40:  # Prevent infinite loops
+        #     return True
             
         return False
 
@@ -238,7 +238,7 @@ class TravelPlanningSystem:
             若天氣不佳（如下雨、強風、酷暑），請更換為室內景點，
             若天氣良好，則可更換為戶外行程。
             行程內容需具體、合理，並配合使用者原本的動線與住宿位置，避免增加移動成本與轉乘。
-            You can write the complete file generation code that include final travel plan and execute it using the code interpreter tool to generate visual itineraries, maps, charts, or any other helpful visualizations.
+            You can use the code interpreter tool to generate visual itineraries, maps, charts, or any other helpful visualizations.
             YOUR FINAL RESPONSE MUST BE THE COMPLETE PLAN. When the plan is complete and all perspectives are integrated, you can respond with TERMINATE.
             """,
             tools=code_interpreter.definitions,
@@ -284,8 +284,7 @@ class TravelPlanningSystem:
                     agents["summary"]
                 ],
                 termination_strategy=TravelPlanningTerminationStrategy(
-                    agents=[agents["summary"]],
-                    maximum_iterations=20
+                    agents=[agents["summary"]]
                 )
             )
             
