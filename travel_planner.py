@@ -353,7 +353,13 @@ class TravelPlanningSystem:
                     
             finally:
                 # Cleanup
-                await chat.reset()
+                # Add a delay before cleanup
+                await asyncio.sleep(2)
+                # Then try reset
+                try:
+                    await chat.reset()
+                except Exception as e:
+                    print(f"Warning: Could not reset chat: {e}")
                 for agent in agents.values():
                     await client.agents.delete_agent(agent.id)
     
