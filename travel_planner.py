@@ -332,14 +332,14 @@ async def main():
     """Main execution function."""
     # Load configuration from environment variables
     config = {
-        "GEOCODING_API_KEY": "7df67dd4bedc45538e04cb7c3c7fbc72",
+        "GEOCODING_API_KEY": "my key",
         "MODEL_DEPLOYMENT_NAME": "gpt-4o",
         "AIPROJECT_ENDPOINT": "https://swedencentral.api.azureml.ms",
         "AIPROJECT_SUBSCRIPTION_ID": "d598fcd6-0db7-43df-adb8-7b537c178a92",
         "AIPROJECT_RESOURCE_GROUP_NAME": "adeline",
         "AIPROJECT_PROJECT_NAME": "a-adelineyu-semantic",
-        "AZURE_STORAGE_CONNECTION_STRING": "DefaultEndpointsProtocol=https;AccountName=adeline7238714506;AccountKey=IHKpIcym2hjyBMCnZ6Xhb3on47QXnzzZKNGyjXAyhQQA3Xbgf9Xk0Z0Wy+FeSZcWf14RHxRYgEQ8+AStpkjnXA==;EndpointSuffix=core.windows.net",
-        "AZURE_OPENAI_API_KEY": "FMyPlo9BIi5W4xmhSio4eS3faMr2YRZ6g5cOBmYJ2k2iVfEOxkrUJQQJ99BCACfhMk5XJ3w3AAABACOGTzmA",
+        "AZURE_STORAGE_CONNECTION_STRING": "my string",
+        "AZURE_OPENAI_API_KEY": "my key",
         "AZURE_OPENAI_ENDPOINT": "https://adeline0415openai.openai.azure.com/",
     }
     
