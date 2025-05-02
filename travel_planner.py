@@ -45,10 +45,6 @@ class TravelPlanningTerminationStrategy(TerminationStrategy):
         if agent.name == "TravelSummaryAgent" and "TERMINATE" in last_message.content:
             return True
             
-        # # Also terminate if we reach a certain number of iterations
-        # if len(history) > 40:  # Prevent infinite loops
-        #     return True
-            
         return False
 
 class WeatherService:
@@ -174,7 +170,7 @@ class TravelPlanningSystem:
                 """Get the weather forecast for a given location and date range."""
                 return self.weather_service.get_weather_forecast(location_name, start_date, end_date)
 
-        # 創建插件實例
+        # createpligin instance
         weather_plugin = WeatherPlugin(self.weather_service)
 
         # 3. Weather Advisor Agent (with tools)
@@ -224,7 +220,7 @@ class TravelPlanningSystem:
         weather_advisor_agent = AzureAIAgent(
             client=client, 
             definition=weather_advisor_definition,
-            plugins=[weather_plugin]  # 在這裡添加插件
+            plugins=[weather_plugin]  # add plugin to the agent
         )
 
         # 4. Travel Summary Agent (with code interpreter)
@@ -240,15 +236,7 @@ class TravelPlanningSystem:
             行程內容需具體、合理，並配合使用者原本的動線與住宿位置，避免增加移動成本與轉乘。
             You can use the code interpreter tool to generate visual itineraries, maps, charts, or any other helpful visualizations.
             
-            IMPORTANT: First provide the COMPLETE detailed travel plan with all recommendations integrated.
-            Include a comprehensive day-by-day itinerary with:
-            - Dates and times
-            - Transportation methods and routes
-            - Hotel recommendations
-            - Activity suggestions 
-            - Weather considerations
-            
-            Only after you have provided the complete travel plan, conclude your response with the word "TERMINATE".
+            IMPORTANT:  YOUR FINAL RESPONSE MUST BE THE COMPLETE PLAN. When the plan is complete and all perspectives are integrated, you can respond with TERMINATE.
             """,
             tools=code_interpreter.definitions,
             tool_resources=code_interpreter.resources
@@ -306,27 +294,6 @@ class TravelPlanningSystem:
                 async for content in chat.invoke():
                     print(f"# {content.role} - {content.name or '*'}: '{content.content}'")
                     
-                    # Handle tool calls for weather agent
-                    try:
-                        if content.name == "WeatherAdvisorAgent" and hasattr(content, 'tool_calls') and content.tool_calls:
-                            for tool_call in content.tool_calls:
-                                if tool_call.function.name == "get_weather_forecast":
-                                    args = json.loads(tool_call.function.arguments)
-                                    weather_result = self.weather_service.get_weather_forecast(
-                                        location_name=args.get("location_name"),
-                                        start_date=args.get("start_date"),
-                                        end_date=args.get("end_date")
-                                    )
-                                    # Add tool result back to chat
-                                    await chat.add_chat_message(
-                                        message=weather_result,
-                                        role="tool",
-                                        tool_call_id=tool_call.id
-                                    )
-                    except AttributeError as e:
-                        print(f"處理工具調用時出錯: {e}")
-                    
-                    # Handle code interpreter results
                     try:
                         if hasattr(content, 'file_path_annotations') and content.file_path_annotations:
                             for file_path_annotation in content.file_path_annotations:
