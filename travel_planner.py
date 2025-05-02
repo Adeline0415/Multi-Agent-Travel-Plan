@@ -22,6 +22,8 @@ from semantic_kernel import Kernel
 
 # Weather API imports
 import requests
+import re
+import time
 
 # Local imports
 from util import AzureBlobManager
@@ -69,8 +71,8 @@ class TravelPlanningSystem:
 
         self.dalle_client = AzureOpenAI(
             api_key=self.config["AZURE_OPENAI_API_KEY"],
-            api_version="gpt-4o",
-            azure_endpoint = self.config["AIPROJECT_ENDPOINT"],
+            api_version="2024-02-01",
+            azure_endpoint = self.config["AZURE_OPENAI_ENDPOINT"],
         )
         # Create credentials
         self.credential = DefaultAzureCredential()
@@ -208,27 +210,9 @@ class TravelPlanningSystem:
             5. Only after all these steps are complete, add "TERMINATE" to your message
             
             Remember to incorporate all the weather advisories and route optimizations from the other agents.
+            OUR FINAL RESPONSE MUST BE THE COMPLETE PLAN. When the plan is complete and all perspectives are integrated, you can respond with TERMINATE.
             """,
-            tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "generate_image",
-                        "description": "Generate an image based on the given prompt",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "prompt": {
-                                    "type": "string",
-                                    "description": "The query for generating the image"
-                                }
-                            },
-                            "required": ["prompt"]
-                        }
-                    }
-                },
-                *code_interpreter.definitions  # Spread the code interpreter tools
-            ],
+            tools=code_interpreter.definitions,
             tool_resources=code_interpreter.resources
         )
 
@@ -246,7 +230,7 @@ class TravelPlanningSystem:
         }
     
     async def run_travel_planning(self, task_query: str, user_id: str = None) -> Tuple[str, List[str]]:
-        """Run the travel planning using Azure AI Foundry."""
+        """Run the travel planning using Azure AI Foundry with file extraction."""
         
         if not user_id:
             user_id = str(uuid.uuid4())
@@ -292,33 +276,21 @@ class TravelPlanningSystem:
                     try:
                         if hasattr(content, 'file_path_annotations') and content.file_path_annotations:
                             for file_path_annotation in content.file_path_annotations:
-                                print(f"File Path: {file_path_annotation.text}")
-                                print(f"File ID: {file_path_annotation.file_path.file_id}")
-                                
-                                # Get file extension
                                 file_ext = file_path_annotation.text.split('.')[-1]
-                                
-                                # Get file content as bytes
                                 data_bytes = b''.join(client.agents.get_file_content(
                                     file_id=file_path_annotation.file_path.file_id
                                 ))
                                 
-                                # Create optimized filename with timestamp
                                 file_name = os.path.basename(file_path_annotation.text)
                                 timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
                                 new_file_name = f"{timestamp}-{file_name}"
                                 
-                                # Upload to Azure Blob Storage and get URL
                                 image_url = self.blob_manager.upload_blob(
                                     data=data_bytes,
                                     file_name=new_file_name,
                                     content_type=self._get_mime_type(file_ext)
                                 )
-                                
-                                # Add to list of file URLs
                                 file_urls.append(image_url)
-                                
-                                final_response = final_response.replace(file_path_annotation.text, image_url)
                     except AttributeError:
                         # 如果沒有file_path_annotations屬性，跳過這部分
                         pass
@@ -346,6 +318,7 @@ class TravelPlanningSystem:
                 for agent in agents.values():
                     await client.agents.delete_agent(agent.id)
     
+    
     def _get_mime_type(self, extension: str) -> str:
         """Get MIME type from file extension."""
         import mimetypes
@@ -366,7 +339,8 @@ async def main():
         "AIPROJECT_RESOURCE_GROUP_NAME": "adeline",
         "AIPROJECT_PROJECT_NAME": "a-adelineyu-semantic",
         "AZURE_STORAGE_CONNECTION_STRING": "DefaultEndpointsProtocol=https;AccountName=adeline7238714506;AccountKey=IHKpIcym2hjyBMCnZ6Xhb3on47QXnzzZKNGyjXAyhQQA3Xbgf9Xk0Z0Wy+FeSZcWf14RHxRYgEQ8+AStpkjnXA==;EndpointSuffix=core.windows.net",
-        "AZURE_OPENAI_API_KEY": "FMyPlo9BIi5W4xmhSio4eS3faMr2YRZ6g5cOBmYJ2k2iVfEOxkrUJQQJ99BCACfhMk5XJ3w3AAABACOGTzmA"
+        "AZURE_OPENAI_API_KEY": "FMyPlo9BIi5W4xmhSio4eS3faMr2YRZ6g5cOBmYJ2k2iVfEOxkrUJQQJ99BCACfhMk5XJ3w3AAABACOGTzmA",
+        "AZURE_OPENAI_ENDPOINT": "https://adeline0415openai.openai.azure.com/",
     }
     
     # Initialize the travel planning system
