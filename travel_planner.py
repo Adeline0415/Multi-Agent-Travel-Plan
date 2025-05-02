@@ -44,7 +44,7 @@ class TravelPlanningTerminationStrategy(TerminationStrategy):
         last_message = history[-1]
         
         # Only terminate if the summary agent has completed the plan and indicated it's done
-        if agent.name == "TravelSummaryAgent" and "PLAN_COMPLETE" in last_message.content:
+        if agent.name == "TravelSummaryAgent" and "TERMINATE" in last_message.content:
             # Check if there are file paths or generated content before terminating
             has_html_content = False
             
@@ -205,7 +205,7 @@ class TravelPlanningSystem:
             2. Then use generate_image ONCE to create a trip cover image
             3. Create the complete HTML with embedded maps and the image
             4. Save the HTML to a file using the code interpreter
-            5. Only after all these steps are complete, add "PLAN_COMPLETE" to your message
+            5. Only after all these steps are complete, add "TERMINATE" to your message
             
             Remember to incorporate all the weather advisories and route optimizations from the other agents.
             """,
@@ -292,21 +292,33 @@ class TravelPlanningSystem:
                     try:
                         if hasattr(content, 'file_path_annotations') and content.file_path_annotations:
                             for file_path_annotation in content.file_path_annotations:
+                                print(f"File Path: {file_path_annotation.text}")
+                                print(f"File ID: {file_path_annotation.file_path.file_id}")
+                                
+                                # Get file extension
                                 file_ext = file_path_annotation.text.split('.')[-1]
+                                
+                                # Get file content as bytes
                                 data_bytes = b''.join(client.agents.get_file_content(
                                     file_id=file_path_annotation.file_path.file_id
                                 ))
                                 
+                                # Create optimized filename with timestamp
                                 file_name = os.path.basename(file_path_annotation.text)
                                 timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
                                 new_file_name = f"{timestamp}-{file_name}"
                                 
+                                # Upload to Azure Blob Storage and get URL
                                 image_url = self.blob_manager.upload_blob(
                                     data=data_bytes,
                                     file_name=new_file_name,
                                     content_type=self._get_mime_type(file_ext)
                                 )
+                                
+                                # Add to list of file URLs
                                 file_urls.append(image_url)
+                                
+                                final_response = final_response.replace(file_path_annotation.text, image_url)
                     except AttributeError:
                         # 如果沒有file_path_annotations屬性，跳過這部分
                         pass
@@ -341,6 +353,7 @@ class TravelPlanningSystem:
             extension = '.' + extension
         mime_type, _ = mimetypes.guess_type('file' + extension)
         return mime_type or 'application/octet-stream'  # fallback
+        
 
 async def main():
     """Main execution function."""
