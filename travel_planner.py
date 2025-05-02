@@ -334,13 +334,13 @@ async def main():
     config = {
         "GEOCODING_API_KEY": "my key",
         "MODEL_DEPLOYMENT_NAME": "gpt-4o",
-        "AIPROJECT_ENDPOINT": "https://swedencentral.api.azureml.ms",
-        "AIPROJECT_SUBSCRIPTION_ID": "d598fcd6-0db7-43df-adb8-7b537c178a92",
+        "AIPROJECT_ENDPOINT": "endpoint",
+        "AIPROJECT_SUBSCRIPTION_ID": "my id",
         "AIPROJECT_RESOURCE_GROUP_NAME": "adeline",
         "AIPROJECT_PROJECT_NAME": "a-adelineyu-semantic",
         "AZURE_STORAGE_CONNECTION_STRING": "my string",
         "AZURE_OPENAI_API_KEY": "my key",
-        "AZURE_OPENAI_ENDPOINT": "https://adeline0415openai.openai.azure.com/",
+        "AZURE_OPENAI_ENDPOINT": "my endpoint",
     }
     
     # Initialize the travel planning system
