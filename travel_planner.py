@@ -11,6 +11,7 @@ from azure.identity import ClientSecretCredential
 from azure.identity import DefaultAzureCredential
 from azure.ai.projects.aio import AIProjectClient
 from azure.ai.projects.models import CodeInterpreterTool
+from openai import AzureOpenAI
 
 # Semantic Kernel imports
 from semantic_kernel.agents import AgentGroupChat, AzureAIAgent, AzureAIAgentSettings
@@ -24,6 +25,7 @@ import requests
 
 # Local imports
 from util import AzureBlobManager
+from tools import WeatherPlugin, DALLEPlugin
 
 # Configure logging
 import logging
@@ -41,74 +43,22 @@ class TravelPlanningTerminationStrategy(TerminationStrategy):
         
         last_message = history[-1]
         
-        # Terminate if the summary agent outputs a complete plan with 'TERMINATE'
-        if agent.name == "TravelSummaryAgent" and "TERMINATE" in last_message.content:
-            return True
+        # Only terminate if the summary agent has completed the plan and indicated it's done
+        if agent.name == "TravelSummaryAgent" and "PLAN_COMPLETE" in last_message.content:
+            # Check if there are file paths or generated content before terminating
+            has_html_content = False
+            
+            # Look for indication that HTML file was created
+            if "HTML file created" in last_message.content or "travel_plan.html" in last_message.content:
+                has_html_content = True
+            
+            # Check for code blocks with HTML content
+            if "<!DOCTYPE html>" in last_message.content or "<html>" in last_message.content:
+                has_html_content = True
+                
+            return has_html_content
             
         return False
-
-class WeatherService:
-    """Service for weather-related functions"""
-    
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-    
-    def get_lat_long(self, location_name: str) -> Tuple[float, float]:
-        """Get latitude and longitude from a location name."""
-        API_URL = 'https://api.opencagedata.com/geocode/v1/json'   
-        
-        params = {
-            'q': location_name,
-            'key': self.api_key
-        }
-        
-        response = requests.get(API_URL, params=params)
-        if response.status_code == 200:
-            data = response.json()
-            lat = data['results'][0]['geometry']['lat']
-            lon = data['results'][0]['geometry']['lng']
-            return lat, lon
-        else:
-            raise Exception("Geocoding API request failed")
-
-    def get_weather_forecast(self, location_name: str, start_date: str, end_date: str) -> str:
-        """Get the weather forecast for a given location and date range."""
-        try:
-            latitude, longitude = self.get_lat_long(location_name)
-            logger.info(f"latitude:{latitude}, longitude:{longitude}")
-            
-            base_url = 'https://api.open-meteo.com/v1/forecast'
-            params = {
-                'latitude': latitude,
-                'longitude': longitude,
-                'start_date': start_date,
-                'end_date': end_date,
-                'daily': 'temperature_2m_min,temperature_2m_max,rain_sum,weather_code',
-                'timezone': 'GMT'
-            }
-            
-            response = requests.get(base_url, params=params)
-            if response.status_code == 200:
-                forecast_data = response.json()
-                
-                forecast = forecast_data['daily']
-                summary = f"Weather forecast for {location_name} from {start_date} to {end_date}:"
-                for date, temp_min, temp_max, rain, weather_code in zip(
-                    forecast['time'], 
-                    forecast['temperature_2m_min'], 
-                    forecast['temperature_2m_max'], 
-                    forecast['rain_sum'], 
-                    forecast['weather_code']
-                ):
-                    summary += (
-                        f"\nDate: {date}, Min Temp: {temp_min}°C, Max Temp: {temp_max}°C, "
-                        f"Rain: {rain}mm, Weather Code: {weather_code}"
-                    )
-                return summary
-            else:
-                raise Exception("Open-Meteo API request failed")
-        except Exception as e:
-            return str(e)
 
 class TravelPlanningSystem:
     """Multi-agent travel planning system using Semantic Kernel and Azure AI Foundry."""
@@ -116,14 +66,21 @@ class TravelPlanningSystem:
     def __init__(self, config: Dict[str, str]):
         self.config = config
         self.blob_manager = AzureBlobManager(connection_string=config["AZURE_STORAGE_CONNECTION_STRING"])
-        self.weather_service = WeatherService(config["GEOCODING_API_KEY"])
-        
+
+        self.dalle_client = AzureOpenAI(
+            api_key=self.config["AZURE_OPENAI_API_KEY"],
+            api_version="gpt-4o",
+            azure_endpoint = self.config["AIPROJECT_ENDPOINT"],
+        )
         # Create credentials
         self.credential = DefaultAzureCredential()
     
     async def create_travel_planning_agents(self, client, current_date: str):
         """Create all the agents needed for travel planning."""
-        
+        # create plugin instance
+        weather_plugin = WeatherPlugin(self.config["GEOCODING_API_KEY"])
+        dalle_plugin = DALLEPlugin(self.dalle_client)
+
         # 1. Travel Planner Agent
         planner_definition = await client.agents.create_agent(
             model=self.config["MODEL_DEPLOYMENT_NAME"],
@@ -154,24 +111,6 @@ class TravelPlanningSystem:
             """
         )
         routemaster_agent = AzureAIAgent(client=client, definition=routemaster_definition)
-        
-        class WeatherPlugin:
-            def __init__(self, weather_service):
-                self.weather_service = weather_service
-                
-            @kernel_function(
-                description="Get weather forecast for a location",
-                name="get_weather_forecast"
-            )
-            def get_weather_forecast(self, 
-                                    location_name: Annotated[str, "The name of the location"],
-                                    start_date: Annotated[str, "Start date in YYYY-MM-DD format"],
-                                    end_date: Annotated[str, "End date in YYYY-MM-DD format"]) -> str:
-                """Get the weather forecast for a given location and date range."""
-                return self.weather_service.get_weather_forecast(location_name, start_date, end_date)
-
-        # createpligin instance
-        weather_plugin = WeatherPlugin(self.weather_service)
 
         # 3. Weather Advisor Agent (with tools)
         weather_advisor_definition = await client.agents.create_agent(
@@ -224,24 +163,80 @@ class TravelPlanningSystem:
         )
 
         # 4. Travel Summary Agent (with code interpreter)
+        # Create DALLE plugin instance
+
+# 4. Travel Summary Agent with Code Interpreter and DALLE
         code_interpreter = CodeInterpreterTool()
         summary_agent_definition = await client.agents.create_agent(
             model=self.config["MODEL_DEPLOYMENT_NAME"],
             name="TravelSummaryAgent",
             instructions="""
-            You are a helpful assistant that can take in all of the suggestions and advice from the other agents and provide a detailed final travel plan.
-            You must ensure that the final plan is integrated and complete.
-            若天氣不佳（如下雨、強風、酷暑），請更換為室內景點，
-            若天氣良好，則可更換為戶外行程。
-            行程內容需具體、合理，並配合使用者原本的動線與住宿位置，避免增加移動成本與轉乘。
-            You can use the code interpreter tool to generate visual itineraries, maps, charts, or any other helpful visualizations.
+            You are a travel plan formatter that creates beautiful HTML presentations of travel itineraries.
             
-            IMPORTANT:  YOUR FINAL RESPONSE MUST BE THE COMPLETE PLAN. When the plan is complete and all perspectives are integrated, you can respond with TERMINATE.
+            Take the complete multi-day travel itinerary and additional adjustment suggestions (e.g., based on weather, transportation) from the other agents and format it into a cohesive, visually appealing HTML document.
+            
+            Your output must:
+            - Match the language of the input (Japanese/Chinese/English)
+            - Include a full HTML document with <html>, <head>, and <body> sections
+            - Insert an embedded Google Map <iframe> for each main location or day
+            
+            Images:
+            - Generate ONE representative image for the ENTIRE trip based on the overall travel theme using the generate_image tool
+            - Use the image URL directly in an <img> tag, for example:
+            <img src="[image_url]" alt="Trip Cover Image" style="width:50%;height:auto;">
+            
+            File Handling:
+            - Save the final HTML content to a file named "travel_plan.html" using the code interpreter
+            - Your code should look like:
+            ```python
+            with open('travel_plan.html', 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            print("HTML file created: travel_plan.html")
+            ```
+            
+            Style and Layout:
+            - Use clear headings and structure
+            - Use bullet points for listing places and activities
+            - Highlight important information like hotel names and transportation
+            - Include a clean, readable CSS style inside the HTML
+            
+            IMPORTANT:
+            1. First analyze all advice from other agents
+            2. Then use generate_image ONCE to create a trip cover image
+            3. Create the complete HTML with embedded maps and the image
+            4. Save the HTML to a file using the code interpreter
+            5. Only after all these steps are complete, add "PLAN_COMPLETE" to your message
+            
+            Remember to incorporate all the weather advisories and route optimizations from the other agents.
             """,
-            tools=code_interpreter.definitions,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "generate_image",
+                        "description": "Generate an image based on the given prompt",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "prompt": {
+                                    "type": "string",
+                                    "description": "The query for generating the image"
+                                }
+                            },
+                            "required": ["prompt"]
+                        }
+                    }
+                },
+                *code_interpreter.definitions  # Spread the code interpreter tools
+            ],
             tool_resources=code_interpreter.resources
         )
-        summary_agent = AzureAIAgent(client=client, definition=summary_agent_definition)
+
+        summary_agent = AzureAIAgent(
+            client=client, 
+            definition=summary_agent_definition,
+            plugins=[dalle_plugin]  # Add the DALLE plugin
+        )
         
         return {
             "planner": planner_agent,
@@ -358,6 +353,7 @@ async def main():
         "AIPROJECT_RESOURCE_GROUP_NAME": "adeline",
         "AIPROJECT_PROJECT_NAME": "a-adelineyu-semantic",
         "AZURE_STORAGE_CONNECTION_STRING": "DefaultEndpointsProtocol=https;AccountName=adeline7238714506;AccountKey=IHKpIcym2hjyBMCnZ6Xhb3on47QXnzzZKNGyjXAyhQQA3Xbgf9Xk0Z0Wy+FeSZcWf14RHxRYgEQ8+AStpkjnXA==;EndpointSuffix=core.windows.net",
+        "AZURE_OPENAI_API_KEY": "FMyPlo9BIi5W4xmhSio4eS3faMr2YRZ6g5cOBmYJ2k2iVfEOxkrUJQQJ99BCACfhMk5XJ3w3AAABACOGTzmA"
     }
     
     # Initialize the travel planning system
