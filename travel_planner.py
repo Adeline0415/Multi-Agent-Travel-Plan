@@ -209,7 +209,6 @@ class TravelPlanningSystem:
             4. Save the HTML to a file using the code interpreter
             5. Only after all these steps are complete, add "TERMINATE" to your message
             
-            Remember to incorporate all the weather advisories and route optimizations from the other agents.
             OUR FINAL RESPONSE MUST BE THE COMPLETE PLAN. When the plan is complete and all perspectives are integrated, you can respond with TERMINATE.
             """,
             tools=code_interpreter.definitions,
@@ -230,17 +229,17 @@ class TravelPlanningSystem:
         }
     
     async def run_travel_planning(self, task_query: str, user_id: str = None) -> Tuple[str, List[str]]:
-        """Run the travel planning using Azure AI Foundry with file extraction."""
+        """執行旅行規劃並從 Sandbox 轉移檔案到 Azure Blob Storage"""
         
         if not user_id:
             user_id = str(uuid.uuid4())
         
-        # Check or create thread
+        # 檢查或創建線程
         thread_id = self.blob_manager.read_thread(user_id)
         current_date = datetime.now().strftime("%Y-%m-%d")
         file_urls = []
         
-        # Create AI Project client
+        # 創建 AI Project 客戶端
         async with AIProjectClient(
             endpoint=self.config["AIPROJECT_ENDPOINT"],
             subscription_id=self.config["AIPROJECT_SUBSCRIPTION_ID"],
@@ -248,10 +247,10 @@ class TravelPlanningSystem:
             project_name=self.config["AIPROJECT_PROJECT_NAME"],
             credential=self.credential
         ) as client:
-            # Create all agents
+            # 創建所有代理
             agents = await self.create_travel_planning_agents(client, current_date)
             
-            # Create the group chat
+            # 創建群組聊天
             chat = AgentGroupChat(
                 agents=[
                     agents["planner"],
@@ -265,58 +264,193 @@ class TravelPlanningSystem:
             )
             
             try:
-                # Add the task to the group chat
+                # 添加任務到群組聊天
                 await chat.add_chat_message(message=task_query)
                 print(f"# {AuthorRole.USER}: '{task_query}'")
                 
-                # Run the chat
+                # 用於存儲最終回應
+                final_response = None
+                
+                # 執行聊天
                 async for content in chat.invoke():
                     print(f"# {content.role} - {content.name or '*'}: '{content.content}'")
                     
+                    # 處理天氣代理的工具調用
+                    try:
+                        if content.name == "WeatherAdvisorAgent" and hasattr(content, 'tool_calls') and content.tool_calls:
+                            for tool_call in content.tool_calls:
+                                if tool_call.function.name == "get_weather_forecast":
+                                    args = json.loads(tool_call.function.arguments)
+                                    weather_result = self.weather_service.get_weather_forecast(
+                                        location_name=args.get("location_name"),
+                                        start_date=args.get("start_date"),
+                                        end_date=args.get("end_date")
+                                    )
+                                    # 將工具結果添加回聊天
+                                    await chat.add_chat_message(
+                                        message=weather_result,
+                                        role="tool",
+                                        tool_call_id=tool_call.id
+                                    )
+                    except AttributeError as e:
+                        print(f"處理工具調用時出錯: {e}")
+                    
+                    # 處理來自代碼解釋器的檔案路徑註解
                     try:
                         if hasattr(content, 'file_path_annotations') and content.file_path_annotations:
+                            print(f"發現 {len(content.file_path_annotations)} 個檔案路徑註解")
+                            
                             for file_path_annotation in content.file_path_annotations:
+                                # 打印檔案路徑註解的詳細信息
+                                print(f"檔案路徑: {file_path_annotation.text}")
+                                print(f"檔案 ID: {file_path_annotation.file_path.file_id}")
+                                
+                                # 獲取檔案擴展名
                                 file_ext = file_path_annotation.text.split('.')[-1]
-                                data_bytes = b''.join(client.agents.get_file_content(
-                                    file_id=file_path_annotation.file_path.file_id
-                                ))
                                 
-                                file_name = os.path.basename(file_path_annotation.text)
-                                timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-                                new_file_name = f"{timestamp}-{file_name}"
-                                
-                                image_url = self.blob_manager.upload_blob(
-                                    data=data_bytes,
-                                    file_name=new_file_name,
-                                    content_type=self._get_mime_type(file_ext)
-                                )
-                                file_urls.append(image_url)
-                    except AttributeError:
-                        # 如果沒有file_path_annotations屬性，跳過這部分
+                                # 獲取檔案內容 (使用 b''.join 方法)
+                                try:
+                                    data_bytes = b''.join(client.agents.get_file_content(
+                                        file_id=file_path_annotation.file_path.file_id
+                                    ))
+                                    
+                                    # 檢查檔案內容是否為空
+                                    if data_bytes:
+                                        # 準備檔案名稱 (加上時間戳以避免衝突)
+                                        file_name = os.path.basename(file_path_annotation.text)
+                                        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+                                        new_file_name = f"{timestamp}-{file_name}"
+                                        
+                                        # 上傳到 Azure Blob Storage
+                                        print(f"上傳檔案到 Azure Blob Storage: {new_file_name}")
+                                        
+                                        # 注意: 使用 image_data 參數名稱 (與 AzureBlobManager 方法匹配)
+                                        image_url = self.blob_manager.upload_blob(
+                                            image_data=data_bytes,
+                                            file_name=new_file_name,
+                                            content_type=self._get_mime_type(file_ext)
+                                        )
+                                        
+                                        file_urls.append(image_url)
+                                        print(f"上傳成功: {image_url}")
+                                        
+                                        # 如果已經有最終回應，將 sandbox 路徑替換為實際 URL
+                                        if final_response:
+                                            final_response = final_response.replace(
+                                                file_path_annotation.text, 
+                                                image_url
+                                            )
+                                    else:
+                                        print(f"警告: 檔案 {file_path_annotation.text} 內容為空")
+                                except Exception as e:
+                                    print(f"處理檔案 {file_path_annotation.text} 時出錯: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                    except AttributeError as e:
+                        # 如果沒有 file_path_annotations 屬性，跳過
                         pass
                     
-                    # Store the final response
+                    # 儲存最終回應
                     if content.name == "TravelSummaryAgent" and "TERMINATE" in content.content:
                         final_response = content.content.replace("TERMINATE", "").strip()
-                        return final_response, file_urls
                 
-                # If we reach here without a final response
-                if chat.history:
-                    return chat.history[-1].content, file_urls
-                else:
-                    return "No travel plan could be generated.", file_urls
+                # 在聊天完成後，檢查是否還有未處理的檔案路徑註解
+                # 這是額外的保障，確保不會遺漏任何檔案
+                try:
+                    messages = await client.agents.list_messages(thread_id=thread_id)  # 使用 thread_id 而不是 thread.id
+                    
+                    if hasattr(messages, 'file_path_annotations') and messages.file_path_annotations:
+                        print(f"聊天結束後，發現 {len(messages.file_path_annotations)} 個檔案路徑註解")
+                        
+                        for file_path_annotation in messages.file_path_annotations:
+                            # 檢查這個檔案是否已經處理過 (避免重複處理)
+                            file_path = file_path_annotation.text
+                            file_id = file_path_annotation.file_path.file_id
+                            
+                            # 檢查 URL 列表中是否已包含此檔案的 URL
+                            already_processed = False
+                            for url in file_urls:
+                                if os.path.basename(file_path) in url:
+                                    already_processed = True
+                                    break
+                            
+                            if not already_processed:
+                                print(f"處理新發現的檔案: {file_path}, ID: {file_id}")
+                                
+                                # 獲取檔案擴展名
+                                file_ext = file_path.split('.')[-1]
+                                
+                                # 獲取檔案內容
+                                try:
+                                    data_bytes = b''.join(client.agents.get_file_content(
+                                        file_id=file_id
+                                    ))
+                                    
+                                    if data_bytes:
+                                        # 準備檔案名稱
+                                        file_name = os.path.basename(file_path)
+                                        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+                                        new_file_name = f"{timestamp}-{file_name}"
+                                        
+                                        # 上傳到 Azure Blob Storage
+                                        print(f"上傳新發現的檔案到 Azure Blob Storage: {new_file_name}")
+                                        
+                                        image_url = self.blob_manager.upload_blob(
+                                            image_data=data_bytes,
+                                            file_name=new_file_name,
+                                            content_type=self._get_mime_type(file_ext)
+                                        )
+                                        
+                                        file_urls.append(image_url)
+                                        print(f"上傳成功: {image_url}")
+                                        
+                                        # 替換最終回應中的 sandbox 路徑
+                                        if final_response:
+                                            final_response = final_response.replace(file_path, image_url)
+                                    else:
+                                        print(f"警告: 檔案 {file_path} 內容為空")
+                                except Exception as e:
+                                    print(f"處理新發現的檔案 {file_path} 時出錯: {e}")
+                except Exception as e:
+                    print(f"獲取消息列表時出錯: {e}")
+                
+                # 如果沒有最終回應，使用最後一條聊天訊息
+                if not final_response:
+                    if chat.history:
+                        final_response = chat.history[-1].content
+                    else:
+                        final_response = "無法生成旅行計劃。"
+                
+                # 在最終回應中添加檔案 URL
+                if file_urls and not any(url in final_response for url in file_urls):
+                    final_response += "\n\n## 生成的檔案\n"
+                    for i, url in enumerate(file_urls, 1):
+                        file_name = url.split('/')[-1].split('?')[0]
+                        final_response += f"{i}. [{file_name}]({url})\n"
+                
+                return final_response, file_urls
                     
             finally:
-                # Cleanup
-                # Add a delay before cleanup
+                # 清理資源
+                print("進行清理...")
+                
+                # 添加延遲再清理
                 await asyncio.sleep(2)
-                # Then try reset
+                
+                # 重置聊天
                 try:
                     await chat.reset()
+                    print("聊天已重置")
                 except Exception as e:
-                    print(f"Warning: Could not reset chat: {e}")
-                for agent in agents.values():
-                    await client.agents.delete_agent(agent.id)
+                    print(f"警告: 無法重置聊天: {e}")
+                
+                # 刪除代理
+                for agent_name, agent in agents.items():  # 使用 .items() 而不是 .values()
+                    try:
+                        await client.agents.delete_agent(agent.id)
+                        print(f"已刪除代理: {agent_name}")
+                    except Exception as e:
+                        print(f"警告: 無法刪除代理 {agent_name}: {e}")
     
     
     def _get_mime_type(self, extension: str) -> str:

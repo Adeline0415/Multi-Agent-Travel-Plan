@@ -68,7 +68,7 @@ class AzureBlobManager:
             print(f"Failed to read data blob: {e}")
             raise
 
-    def upload_blob(self, image_data: bytes, file_name: str, content_type: str, container_name: str = "files", expiry_hours: int = 3500):
+    def upload_blob(self, image_data: bytes, file_name: str, content_type: str, container_name: str = "travel-planner-files", expiry_hours: int = 3500):
         blob_client = self._get_blob_client(container_name, file_name)
         try:
             blob_client.upload_blob(image_data, overwrite=True, content_settings=ContentSettings(content_type=content_type))
