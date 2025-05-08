@@ -208,16 +208,35 @@ class TravelPlanningSystem:
                         "name": content.name,
                         "content": content.content
                     })
-
-                instruction = "Please combine the above into a complete travel plan, including everyday itinerary, accommodation, transportation and weather. And you must use code interpreter to generate the final travel plan into an HTML file."
-                group_chat_responses.append({
-                    "role": "user",
-                    "content": instruction
-                })
                     
+                    # # Handle tool calls for weather agent
+                    # try:
+                    #     if content.name == "WeatherAdvisorAgent" and hasattr(content, 'tool_calls') and content.tool_calls:
+                    #         for tool_call in content.tool_calls:
+                    #             if tool_call.function.name == "get_weather_forecast":
+                    #                 args = json.loads(tool_call.function.arguments)
+                    #                 # Use the WeatherPlugin from tools.py
+                    #                 weather_result = self.weather_plugin.get_weather_forecast(
+                    #                     location_name=args.get("location_name"),
+                    #                     start_date=args.get("start_date"),
+                    #                     end_date=args.get("end_date")
+                    #                 )
+                    #                 # Add tool result back to chat
+                    #                 await chat.add_chat_message(
+                    #                     message=weather_result,
+                    #                     role="tool",
+                    #                     tool_call_id=tool_call.id
+                    #                 )
+                    #                 group_chat_responses.append({
+                    #                     "role": "tool",
+                    #                     "content": weather_result
+                    #                 })
+                    # except AttributeError as e:
+                    #     print(f"處理工具調用時出錯: {e}")
                 print("Group chat responses:", group_chat_responses)
                 # Now create the FileGenerationAgent outside the group chat
-                final_response, urls = self.run_file_generation_agent(
+                # 修改這一行
+                final_response, urls = await self.run_file_generation_agent(
                     group_chat_responses, 
                     current_date
                 )
@@ -230,11 +249,11 @@ class TravelPlanningSystem:
                 for agent in agents.values():
                     await client.agents.delete_agent(agent.id)
     
-    def run_file_generation_agent(self, group_chat_responses, current_date):
-        """Synchronous version of the file generation agent"""
+    async def run_file_generation_agent(self, group_chat_responses, current_date):
+        """Asynchronous version of the file generation agent with robust file handling"""
         dalle_plugin = DALLEPlugin(self.dalle_client)
 
-        # Create a consolidated message
+        # 創建整合的訊息
         consolidated_message = "# Travel Planning Group Chat Results\n\n"
         for resp in group_chat_responses:
             role = resp.get("role", "")
@@ -248,24 +267,24 @@ class TravelPlanningSystem:
             elif role == "tool":
                 consolidated_message += f"## Tool Response\n{content}\n\n"
 
-            print(f"Consolidated message: {consolidated_message}")
-        # Create synchronous AI Project client
-        project_client = AIProjectClient(
+        print(f"Consolidated message prepared, length: {len(consolidated_message)}")
+        
+        # 創建異步 AI Project 客戶端
+        async with AsyncAIProjectClient(
             endpoint=self.config["AIPROJECT_ENDPOINT"],
             subscription_id=self.config["AIPROJECT_SUBSCRIPTION_ID"],
             resource_group_name=self.config["AIPROJECT_RESOURCE_GROUP_NAME"],
             project_name=self.config["AIPROJECT_PROJECT_NAME"],
             credential=self.credential
-        )
-        
-        try:
-            # Create the FileGenerationAgent
-            code_interpreter = CodeInterpreterTool()
-            file_gen_definition = project_client.agents.create_agent(
-                model=self.config["MODEL_DEPLOYMENT_NAME"],
-                name="FileGenerationAgent",
-                instructions="""
-                You are a travel plan formatter that creates beautiful HTML presentations of travel itineraries.
+        ) as project_client:
+            try:
+                # 創建 FileGenerationAgent
+                code_interpreter = CodeInterpreterTool()
+                file_gen_definition = await project_client.agents.create_agent(
+                    model=self.config["MODEL_DEPLOYMENT_NAME"],
+                    name="FileGenerationAgent",
+                    instructions="""
+                   You are a travel plan formatter that creates beautiful HTML presentations of travel itineraries.
                 
                 Take the complete multi-day travel itinerary and additional adjustment suggestions (e.g., based on weather, transportation) from the other agents and format it into a cohesive, visually appealing HTML document.
                 
@@ -274,7 +293,11 @@ class TravelPlanningSystem:
                 - Include a full HTML document with <html>, <head>, and <body> sections
                 - Insert an embedded Google Map <iframe> for each main location or day
                 - Complete multi-day travel plan included weather information, transportation suggestions, and any other relevant details (like luanch and dinner options if available)
-                - The HTML should contain every day of the trip, including the date and travel plan details each day.
+                
+                Images:
+                - Generate ONE representative image for the ENTIRE trip based on the overall travel theme using the generate_image tool
+                - Use the image URL directly in an <img> tag, for example:
+                <img src="[image_url]" alt="Trip Cover Image" style="width:50%;height:auto;">
                 
                 File Handling:
                 - Save the final HTML content to a file named "travel_plan.html" using the code interpreter
@@ -292,145 +315,255 @@ class TravelPlanningSystem:
                 - Include a clean, readable CSS style inside the HTML
                 
                 IMPORTANT:
-                1. First integrate all travel plan from other agents and finalize it(taking into account traffic and weather)
-                2. The final travel plan must include every day of the trip (ex: if the trip is 7 days, the plan must include 7 days, not just 3 days)
-                2. Create the complete HTML with embedded maps
-                3. Save the HTML to a file using the code interpreter
-                4. Print the EXACT file paths of any files you create
+                1. First analyze all advice from other agents
+                2. Then use generate_image ONCE to create a trip cover image
+                3. Create the complete HTML with embedded maps and the image
+                4. Save the HTML to a file using the code interpreter
+                5. Print the EXACT file paths of any files you create
+                6. Only after all these steps are complete, add "TERMINATE" to your message
 
-                OUR FINAL RESPONSE MUST BE THE COMPLETE PLAN. When the plan is complete and all perspectives are integrated
                 CRITICAL NOTE: Your primary purpose is to create and save the HTML file. If you fail to save a proper HTML file, you have failed your mission. No exceptions.
-                """,
-                tools=code_interpreter.definitions,
-                tool_resources=code_interpreter.resources
-            )
-        
-            # Create a new thread
-            thread = project_client.agents.create_thread()
+                    """,
+                    tools=code_interpreter.definitions,
+                    tool_resources=code_interpreter.resources
+                )
             
-            # Add the consolidated message to the thread
-            message = project_client.agents.create_message(
-                thread_id=thread.id,
-                role="user",
-                content=consolidated_message
-            )
-            
-            # Run the agent
-            run = project_client.agents.create_run(
-                thread_id=thread.id,
-                agent_id=file_gen_definition.id
-            )
-            
-            print(f"File Generation Agent run created with ID: {run.id}")
-            
-            # Wait for the run to complete
-            while run.status in ["queued", "in_progress", "requires_action"]:
-                print(f"Run status: {run.status}")
-                time.sleep(2)
-                run = project_client.agents.get_run(thread_id=thread.id, run_id=run.id)
-            
-            print(f"File Generation Agent run completed with status: {run.status}")
-            
-            # Get messages from the thread
-            messages = project_client.agents.list_messages(thread_id=thread.id)
-            
-            # Process file path annotations and get final response
-            file_urls = []
-            final_response = ""
-            
-            # Get the assistant's message
-            try:
-                # Find the assistant's message
+                # 創建新執行緒
+                thread = await project_client.agents.create_thread()
+                
+                # 添加整合訊息至執行緒
+                await project_client.agents.create_message(
+                    thread_id=thread.id,
+                    role="user",
+                    content=consolidated_message
+                )
+                
+                # 執行代理
+                run = await project_client.agents.create_run(
+                    thread_id=thread.id,
+                    agent_id=file_gen_definition.id
+                )
+                
+                print(f"File Generation Agent run created with ID: {run.id}")
+                
+                # 等待執行完成，使用擴展間隔以避免速率限制
+                last_check_time = time.time()
+                min_check_interval = 5
+                timeout = 600  # 5 分鐘超時
+                start_time = time.time()
+                
+                while run.status in ["queued", "in_progress", "requires_action"]:
+                    current_time = time.time()
+                    
+                    # 檢查超時
+                    if current_time - start_time > timeout:
+                        print(f"Run timed out after {timeout} seconds")
+                        break
+                    
+                    # 強制最小檢查間隔
+                    elapsed = current_time - last_check_time
+                    if elapsed < min_check_interval:
+                        await asyncio.sleep(min_check_interval - elapsed)
+                    
+                    print(f"Run status: {run.status}")
+                    last_check_time = time.time()
+                    
+                    run = await project_client.agents.get_run(thread_id=thread.id, run_id=run.id)
+                
+                print(f"File Generation Agent run completed with status: {run.status}")
+                
+                print("Waiting for file registration to complete...")
+                await asyncio.sleep(40)
+                
+                # 獲取執行緒訊息
+                messages = await project_client.agents.list_messages(thread_id=thread.id)
+                
+                # 處理檔案註解和取得最終回應
+                file_urls = []
+                final_response = ""
+                
+                # 獲取助理訊息
                 for msg in messages.data:
                     if msg.role == "assistant":
-                        # Get the content from the message
                         for content_item in msg.content:
                             if hasattr(content_item, 'text') and hasattr(content_item.text, 'value'):
                                 final_response = content_item.text.value
                                 break
-            except Exception as e:
-                print(f"Error getting assistant message: {e}")
-                final_response = "Could not retrieve the final travel plan."
-            
-            # Process file path annotations to get files
-            try:
-                # Print details for debugging
-                print(f"Looking for file path annotations...")
+                        break
                 
-                if hasattr(messages, 'file_path_annotations'):
-                    annotations = messages.file_path_annotations
-                    print(f"Found {len(annotations)} file path annotations")
+                # 處理檔案註解
+                try:
+                    print("Looking for file path annotations...")
                     
-                    for file_path_annotation in annotations:
-                        try:
-                            print(f"Processing file: {file_path_annotation.text}")
+                    # 檢查是否有檔案註解
+                    if hasattr(messages, 'file_path_annotations') and messages.file_path_annotations:
+                        annotations = messages.file_path_annotations
+                        print(f"Found {len(annotations)} file path annotations")
+                        
+                        for file_path_annotation in annotations:
                             file_id = file_path_annotation.file_path.file_id
-                            print(f"Getting file content for {file_id}")
                             
-                            # Synchronous file content retrieval
-                            data_bytes_chunks = project_client.agents.get_file_content(file_id=file_id)
-                            data_bytes = b''.join(data_bytes_chunks)
+                            # 使用重試邏輯獲取檔案
+                            data_bytes = await self.get_file_with_retry(project_client, file_id)
                             
-                            print(f"Successfully read file, size: {len(data_bytes)} bytes")
+                            if data_bytes:
+                                # 處理檔案
+                                file_name = os.path.basename(file_path_annotation.text)
+                                timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+                                new_file_name = f"{timestamp}-{file_name}"
+                                
+                                file_ext = file_name.split('.')[-1]
+                                content_type = self._get_mime_type(file_ext)
+                                
+                                image_url = self.blob_manager.upload_blob(
+                                    image_data=data_bytes,
+                                    file_name=new_file_name,
+                                    content_type=content_type
+                                )
+                                
+                                file_urls.append(image_url)
+                                print(f"Successfully uploaded file to {image_url}")
+                                
+                                # 替換回應中的沙盒路徑
+                                final_response = final_response.replace(
+                                    file_path_annotation.text, 
+                                    image_url
+                                )
+                    else:
+                        print("No file_path_annotations found, checking message content for file paths...")
+                        
+                        # 從訊息內容提取檔案路徑
+                        sandbox_file_path = None
+                        for msg in messages.data:
+                            if msg.role == "assistant":
+                                for content_item in msg.content:
+                                    if hasattr(content_item, 'text') and hasattr(content_item.text, 'value'):
+                                        content = content_item.text.value
+                                        file_path = self.extract_file_path_from_content(content)
+                                        if file_path:
+                                            sandbox_file_path = file_path
+                                            print(f"Found file path in message: {sandbox_file_path}")
+                                            break
+                        
+                        # 如果找到了檔案路徑但沒有檔案註解，則從訊息提取 HTML 內容
+                        if sandbox_file_path or "<!DOCTYPE html>" in final_response or "<html" in final_response:
+                            html_content = self.extract_html_from_content(final_response)
                             
-                            # Upload to blob storage
-                            file_name = os.path.basename(file_path_annotation.text)
-                            timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-                            new_file_name = f"{timestamp}-{file_name}"
-                            
-                            # Get MIME type
-                            file_ext = file_name.split('.')[-1]
-                            content_type = self._get_mime_type(file_ext)
-                            
-                            # Upload file to blob storage
-                            image_url = self.blob_manager.upload_blob(
-                                image_data=data_bytes,
-                                file_name=new_file_name,
-                                content_type=content_type
-                            )
-                            
-                            file_urls.append(image_url)
-                            print(f"Successfully uploaded file to {image_url}")
-                            
-                            # Replace sandbox paths with actual URLs in the response
-                            final_response = final_response.replace(
-                                file_path_annotation.text, 
-                                image_url
-                            )
-                            
-                        except Exception as e:
-                            print(f"Error processing file {file_path_annotation.text}: {str(e)}")
-                            import traceback
-                            traceback.print_exc()
-                else:
-                    print("No file_path_annotations found in messages object")
-                    # Print message object details for debugging
-                    print(f"Messages object attributes: {dir(messages)}")
-            except Exception as e:
-                print(f"Error processing file path annotations: {e}")
-                import traceback
-                traceback.print_exc()
-            
-            # Add file URLs to response if any were generated
-            if file_urls:
-                final_response += "\n\n## Generated Files:\n"
-                for i, url in enumerate(file_urls, 1):
-                    final_response += f"\n{i}. [View File {i}]({url})"
-            else:
-                final_response += "\n\nNo files were generated or there was an error in file processing."
-            
-            # Remove TERMINATE if present
-            if "TERMINATE" in final_response:
-                final_response = final_response.replace("TERMINATE", "").strip()
+                            if html_content:
+                                print(f"Extracted HTML content, length: {len(html_content)}")
+                                
+                                # 手動創建和上傳檔案
+                                timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+                                file_name = f"{timestamp}-travel_plan.html"
+                                
+                                image_url = self.blob_manager.upload_blob(
+                                    image_data=html_content.encode('utf-8'),
+                                    file_name=file_name,
+                                    content_type="text/html"
+                                )
+                                
+                                file_urls.append(image_url)
+                                print(f"Manually created and uploaded HTML file to {image_url}")
+                            else:
+                                print("Could not extract HTML content from the response")
+                except Exception as e:
+                    print(f"Error processing file annotations: {e}")
+                    import traceback
+                    traceback.print_exc()
                 
-            return final_response, file_urls
-        
-        finally:
-            # Clean up the agent
+                # 將檔案 URL 添加到回應中
+                if file_urls:
+                    final_response += "\n\n## Generated Files:\n"
+                    for i, url in enumerate(file_urls, 1):
+                        final_response += f"\n{i}. [View File {i}]({url})"
+                else:
+                    final_response += "\n\nNo files were generated or there was an error in file processing."
+                
+                # 刪除 "TERMINATE" 字串如果存在
+                if "TERMINATE" in final_response:
+                    final_response = final_response.replace("TERMINATE", "").strip()
+                    
+                return final_response, file_urls
+            
+            finally:
+                # 清理代理
+                try:
+                    await project_client.agents.delete_agent(file_gen_definition.id)
+                except Exception as e:
+                    print(f"Error deleting agent: {e}")
+    
+    async def get_file_with_retry(self, project_client, file_id, max_retries=5):
+        """使用重試邏輯獲取檔案內容"""
+        for attempt in range(max_retries):
             try:
-                project_client.agents.delete_agent(file_gen_definition.id)
+                print(f"Getting file content attempt {attempt+1}/{max_retries}")
+                
+                if attempt > 0:
+                    await asyncio.sleep(2 * attempt)
+                
+                async with asyncio.timeout(30):
+                    data_bytes_chunks = await project_client.agents.get_file_content(file_id=file_id)
+                    data_bytes = b''.join(data_bytes_chunks)
+                    
+                    if len(data_bytes) > 0:
+                        print(f"Successfully retrieved file, size: {len(data_bytes)} bytes")
+                        return data_bytes
+                    else:
+                        print(f"Warning: Empty file content on attempt {attempt+1}")
+                        if attempt == max_retries - 1:
+                            return None
+            
+            except asyncio.TimeoutError:
+                print(f"Timeout getting file on attempt {attempt+1}")
+                if attempt == max_retries - 1:
+                    return None
+                    
             except Exception as e:
-                print(f"Error deleting agent: {e}")
+                print(f"Error getting file on attempt {attempt+1}: {str(e)}")
+                if attempt == max_retries - 1:
+                    return None
+        
+        return None
+    
+    def extract_file_path_from_content(self, content):
+        """從訊息內容中提取檔案路徑"""
+        patterns = [
+            r'File saved:\s+([^\s]+)',
+            r'HTML file created:\s+([^\s]+)',
+            r'file created:\s+([^\s]+)',
+            r'Created file:\s+([^\s]+)',
+            r'(?:saved|written) to [\'"]?([^\'"\s]+)[\'"]?',
+            r'Output file:\s+([^\s]+)',
+        ]
+        
+        for pattern in patterns:
+            import re
+            matches = re.findall(pattern, content, re.IGNORECASE)
+            if matches:
+                path = matches[0].strip().strip(r'`\'"()')
+                if path.startswith('/mnt/data/'):
+                    path = path[len('/mnt/data/'):]
+                return path
+        
+        return None
+    
+    def extract_html_from_content(self, content):
+        """從訊息內容中提取 HTML 代碼"""
+        # 嘗試多種 HTML 開頭標籤
+        html_starts = ["<!DOCTYPE html>", "<html", "<HTML"]
+        
+        for start_tag in html_starts:
+            html_start = content.find(start_tag)
+            if html_start >= 0:
+                # 搜尋結束標籤
+                html_end = content.find("</html>", html_start)
+                if html_end < 0:
+                    html_end = content.find("</HTML>", html_start)
+                
+                if html_end > html_start:
+                    return content[html_start:html_end + 7]  # 包含結尾標籤
+        
+        return None
     
     def _get_mime_type(self, extension: str) -> str:
         """Get MIME type from file extension."""
