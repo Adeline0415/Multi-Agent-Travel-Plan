@@ -12,7 +12,7 @@ from azure.identity import ClientSecretCredential
 from azure.identity import DefaultAzureCredential
 from azure.ai.projects.aio import AIProjectClient as AsyncAIProjectClient  # Async version for Semantic Kernel
 from azure.ai.projects import AIProjectClient
-from azure.ai.projects.models import CodeInterpreterTool
+from azure.ai.projects.models import CodeInterpreterTool, RequiredFunctionToolCall, SubmitToolOutputsAction, ToolOutput, MessageRole
 
 # Semantic Kernel imports
 from semantic_kernel.agents import AgentGroupChat, AzureAIAgent, AzureAIAgentSettings
@@ -276,6 +276,11 @@ class TravelPlanningSystem:
                 - Complete multi-day travel plan included weather information, transportation suggestions, and any other relevant details (like luanch and dinner options if available)
                 - The HTML should contain every day of the trip, including the date and travel plan details each day.
                 
+                Images:
+                - Generate ONE representative image for the ENTIRE trip based on the overall travel theme using the generate_image tool
+                - Use the image URL directly in an <img> tag, for example:
+                <img src="[image_url]" alt="Trip Cover Image" style="width:50%;height:auto;">
+                
                 File Handling:
                 - Save the final HTML content to a file named "travel_plan.html" using the code interpreter
                 - Your code should look like:
@@ -294,14 +299,15 @@ class TravelPlanningSystem:
                 IMPORTANT:
                 1. First integrate all travel plan from other agents and finalize it(taking into account traffic and weather)
                 2. The final travel plan must include every day of the trip (ex: if the trip is 7 days, the plan must include 7 days, not just 3 days)
-                2. Create the complete HTML with embedded maps
-                3. Save the HTML to a file using the code interpreter
-                4. Print the EXACT file paths of any files you create
+                3. Then use generate_image ONCE to create a trip cover image
+                4. Create the complete HTML with embedded maps and image
+                5. Save the HTML to a file using the code interpreter
+                6. Print the EXACT file paths of any files you create
 
                 OUR FINAL RESPONSE MUST BE THE COMPLETE PLAN. When the plan is complete and all perspectives are integrated
                 CRITICAL NOTE: Your primary purpose is to create and save the HTML file. If you fail to save a proper HTML file, you have failed your mission. No exceptions.
                 """,
-                tools=code_interpreter.definitions,
+                tools=code_interpreter.definitions + dalle_plugin.definitions,
                 tool_resources=code_interpreter.resources
             )
         
@@ -328,10 +334,54 @@ class TravelPlanningSystem:
                 print(f"Run status: {run.status}")
                 time.sleep(2)
                 run = project_client.agents.get_run(thread_id=thread.id, run_id=run.id)
-            
+                
+                if run.status == "requires_action" and isinstance(run.required_action, SubmitToolOutputsAction):
+                    tool_calls = run.required_action.submit_tool_outputs.tool_calls
+                    if not tool_calls:
+                        print("No tool calls provided - cancelling run")
+                        project_client.agents.cancel_run(
+                            thread_id=thread.id, run_id=run.id)
+                        break
+                    
+                    tool_outputs = []
+                    for tool_call in tool_calls:
+                        if isinstance(tool_call, RequiredFunctionToolCall):
+                            function_name = tool_call.function.name
+                            function_args = json.loads(tool_call.function.arguments)
+                            
+                            print(f"Executing tool call: {function_name} with args: {function_args}")
+                            
+                            try:
+                                # 處理 DALLE 圖片生成請求
+                                if function_name == "generate_image":
+                                    prompt = function_args.get("prompt")
+                                    image_url = dalle_plugin.generate_image(prompt)
+                                    tool_outputs.append(
+                                        ToolOutput(
+                                            tool_call_id=tool_call.id,
+                                            output=image_url
+                                        )
+                                    )
+                                    print(f"Generated image URL: {image_url}")
+                                # 你可以在這裡添加對其他函數的處理
+                            except Exception as e:
+                                error_msg = f"Error executing tool_call {tool_call.id}: {e}"
+                                print(error_msg)
+                                # 可選：將錯誤消息返回給模型
+                                tool_outputs.append(
+                                    ToolOutput(
+                                        tool_call_id=tool_call.id,
+                                        output=f"Error: {str(e)}"
+                                    )
+                                )
+                    
+                    print(f"Tool outputs: {tool_outputs}")
+                    if tool_outputs:
+                        project_client.agents.submit_tool_outputs_to_run(
+                            thread_id=thread.id, run_id=run.id, tool_outputs=tool_outputs
+                        )
+                
             print(f"File Generation Agent run completed with status: {run.status}")
-            
-            # Get messages from the thread
             messages = project_client.agents.list_messages(thread_id=thread.id)
             
             # Process file path annotations and get final response

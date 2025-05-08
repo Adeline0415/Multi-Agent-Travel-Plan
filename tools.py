@@ -88,7 +88,28 @@ class DALLEPlugin:
     """Plugin for generating images with DALLE"""
     def __init__(self, dalle_client):
         self.dalle_client = dalle_client
-    
+        self.definitions = [self.generate_image_definition()]  # 添加這行來提供定義
+        
+    def generate_image_definition(self):  # 添加此方法以創建定義
+        """Create definition for the generate_image function"""
+        return {
+            "type": "function",
+            "function": {
+                "name": "generate_image",
+                "description": "Generate an image based on the given prompt",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "The query for generating the image"
+                        }
+                    },
+                    "required": ["prompt"]
+                }
+            }
+        }
+        
     @kernel_function(
         description="Generate an image based on the given prompt",
         name="generate_image"
@@ -96,7 +117,7 @@ class DALLEPlugin:
     def generate_image(self, prompt: Annotated[str, "The query for generating the image"]) -> str:
         """Generate an image based on the given prompt."""
         logging.info(f"DALLE prompt: {prompt}")
-        
+                
         try:
             result = self.dalle_client.images.generate(
                 model="dall-e-3",
@@ -105,10 +126,10 @@ class DALLEPlugin:
                 size="1024x1024",
                 n=1
             )
-            
+                        
             result_json = json.loads(result.model_dump_json())
             image_url = result_json['data'][0]["url"]
-            
+                        
             logging.info(f"Generated image URL: {image_url}")
             return image_url
         except Exception as e:
