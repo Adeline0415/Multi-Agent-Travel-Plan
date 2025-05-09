@@ -16,10 +16,11 @@ from azure.ai.projects.models import CodeInterpreterTool, RequiredFunctionToolCa
 
 # Semantic Kernel imports
 from semantic_kernel.agents import AgentGroupChat, AzureAIAgent, AzureAIAgentSettings
-from semantic_kernel.agents.strategies import TerminationStrategy
-from semantic_kernel.contents import AuthorRole
-from semantic_kernel.functions import kernel_function
+from semantic_kernel.agents.strategies import KernelFunctionTerminationStrategy, TerminationStrategy, SelectionStrategy
+from semantic_kernel.contents import AuthorRole, ChatHistoryTruncationReducer
+from semantic_kernel.functions import KernelFunctionFromPrompt
 from semantic_kernel import Kernel
+from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
 from openai import AzureOpenAI
 
 # Weather API imports
@@ -35,6 +36,12 @@ import logging
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# define agent names
+PLANNER_NAME = "TravelPlannerAgent"
+WEATHER_NAME = "WeatherAdvisorAgent"
+ROUTE_NAME = "RouteMasterAgent"
+FILE_NAME = "FileGenerationAgent"
+
 class TravelPlanningTerminationStrategy(TerminationStrategy):
     """A strategy for determining when the travel planning process should terminate."""
 
@@ -45,15 +52,45 @@ class TravelPlanningTerminationStrategy(TerminationStrategy):
         
         last_message = history[-1]
         
-        # Terminate if the last agent (the RouteMasterAgent or WeatherAdvisorAgent) has responded
-        if agent.name in ["RouteMasterAgent", "WeatherAdvisorAgent"] and len(history) > 6:
+        # Terminate if the last agent (the RouteMasterAgent) has responded
+        if agent.name in [ROUTE_NAME, WEATHER_NAME] and len(history) > 6:
             return True
             
         # Also terminate if we reach a certain number of iterations
-        if len(history) > 40:  # Prevent infinite loops
+        if len(history) > 20:  # Prevent infinite loops
             return True
             
         return False
+    
+class CustomSelectionStrategy(SelectionStrategy):
+    """A custom selection strategy for the travel planning agents."""
+    
+    async def select_agent(self, agents, history):
+        if not history:
+            return agents[0]
+        
+        last_message = history[-1]
+        
+        if hasattr(last_message, 'name'):
+            last_agent_name = last_message.name
+            
+            if last_agent_name == PLANNER_NAME:
+                for agent in agents:
+                    if agent.name == ROUTE_NAME:
+                        return agent
+                        
+            elif last_agent_name == ROUTE_NAME:
+                for agent in agents:
+                    if agent.name == WEATHER_NAME:
+                        return agent
+                        
+            elif last_agent_name == WEATHER_NAME:
+                for agent in agents:
+                    if agent.name == ROUTE_NAME:
+                        return agent
+        
+        # default
+        return agents[0]
 
 class TravelPlanningSystem:
     """Multi-agent travel planning system using Semantic Kernel and Azure AI Foundry."""
@@ -77,7 +114,7 @@ class TravelPlanningSystem:
         # 1. Travel Planner Agent
         planner_definition = await client.agents.create_agent(
             model=self.config["MODEL_DEPLOYMENT_NAME"],
-            name="TravelPlannerAgent",
+            name=PLANNER_NAME,
             instructions=f"""
             Today is {current_date}. You are a helpful assistant that can suggest a travel plan for a user based on their request.
             When generating the itinerary, calculate and include the actual calendar date for each day of the trip.
@@ -90,17 +127,19 @@ class TravelPlanningSystem:
         # 2. RouteMaster Agent
         routemaster_definition = await client.agents.create_agent(
             model=self.config["MODEL_DEPLOYMENT_NAME"],
-            name="RouteMasterAgent",
+            name=ROUTE_NAME,
             instructions="""
-            你是一位擁有超過20年自由行經驗的旅遊達人，熟悉所有地鐵與JR路線，
-            精通景點動線安排、住宿推薦與行李轉移策略。你的任務是根據使用者提供的旅遊行程，
-            從專家的角度提供批判性回饋，指出潛在問題與可優化之處，並給出具體可執行的改善方案，
-            包含：每日交通順暢度、住宿選擇合理性、體力負擔與景點分布安排。
-            請特別留意以下幾點：
-            1. 避免頻繁的地鐵轉乘與跨公司轉線，例如東京Metro、都營地鐵與JR間的跳線移動，因為這會增加交通費與等待時間。
-            2. 檢查每晚飯店與當天行程之間的地理順暢性與合理距離，避免來回折返與不必要的長距離移動。
-            3. 若行程安排不夠合理，請提供具體修改建議，包含推薦替代景點、飯店名稱與順路路線，
-            確保全程以大眾交通工具為主，並盡量簡化交通移動路徑。
+            你是一位在地經驗豐富的包車司機，熟悉當地所有熱門與隱藏版景點，擁有超過10年的旅遊接待與路線規劃經驗。
+            你擅長依照旅客需求設計順暢、有效率且舒適的旅遊路線，並靈活運用包車的優勢，避開人潮與節省交通時間。
+
+            你的任務是根據使用者提供的旅遊天數與偏好，規劃**全程以包車為主的觀光路線**，包含景點順序、停留時間建議與每日路線動線。
+            請以在地導遊兼司機的角度，提出貼心、實用的安排，並特別留意以下幾點：
+
+            1. **路線應避免重複與繞路**，確保每天動線順暢、不折返，並合理分配景點密度與車程時間。
+            2. **考慮旅客體力與舒適度**，避免安排過長車程或連續密集行程，適當安排午餐與休息點。
+            3. **根據不同天氣與時段調整景點順序**，例如將戶外活動安排在早上，避開午後高溫或人潮。
+
+            最終輸出請清楚列出每日預定行程、主要景點、車程時間預估與司機建議，並以親切專業的語氣說明規劃邏輯。
             """
         )
         routemaster_agent = AzureAIAgent(client=client, definition=routemaster_definition)
@@ -108,18 +147,15 @@ class TravelPlanningSystem:
         # 3. Weather Advisor Agent (with tools)
         weather_advisor_definition = await client.agents.create_agent(
             model=self.config["MODEL_DEPLOYMENT_NAME"],
-            name="WeatherAdvisorAgent",
+            name=WEATHER_NAME,
             instructions=f"""
-            Today is {current_date}. 你是一位擁有超過20年經驗的氣象專業知識旅遊顧問，擅長根據即時與預測天氣，
+            你是一位擁有超過20年經驗的氣象專業知識旅遊顧問，擅長根據即時與預測天氣，
             協助使用者動態調整每日行程安排。你的任務是：
-            1. 你**必須**使用 `get_weather_forecast` 工具根據實際地點（如：新宿、淺草、六本木、迪士尼樂園）來查詢天氣資料，不能自行假設天氣。
-            2. 請避免使用籠統的地名如「Tokyo」查詢天氣，而應以每日實際行程地點為查詢依據。
-            3. 若天氣不佳（如下雨、強風、酷暑），請建議更換為室內景點，
-            4. 若天氣良好，則可推薦戶外行程。
-            5. 請根據使用者的行程安排，提供具體的建議與替代方案，並附上天氣預報資料。
-
-            建議內容需具體、合理，並配合使用者原本的動線與住宿位置，避免增加移動成本與轉乘。
-            **Important:** You must always call the `get_weather_forecast` tool whenever you need weather information, and never fabricate weather data yourself.
+            1. 使用get_weather_forecast並根據指定**日期與實際地點(請使用英文地名)**的天氣資訊，提出合適的行程建議。
+            2. **請避免使用籠統的地名查詢天氣**，而應以每日實際行程地點為查詢依據。    
+            若天氣不佳（如下雨、強風、酷暑），請建議更換為室內景點，
+            若天氣良好，則可推薦戶外行程。"
+            建議內容需具體、合理，並配合使用者原本的動線
             """,
             tools=[{
                 "type": "function",
@@ -167,11 +203,12 @@ class TravelPlanningSystem:
         if not user_id:
             user_id = str(uuid.uuid4())
         
+        
         # Check or create thread
         thread_id = self.blob_manager.read_thread(user_id)
         current_date = datetime.now().strftime("%Y-%m-%d")
         group_chat_responses = []
-        file_urls = []
+       
         
         # Create AI Project client
         async with AsyncAIProjectClient(
@@ -184,6 +221,9 @@ class TravelPlanningSystem:
             # Create all agents
             agents = await self.create_travel_planning_agents(client, current_date)
             
+            selection_strategy = CustomSelectionStrategy()
+            termination_strategy = TravelPlanningTerminationStrategy()
+
             # Create the group chat
             chat = AgentGroupChat(
                 agents=[
@@ -191,7 +231,8 @@ class TravelPlanningSystem:
                     agents["routemaster"],
                     agents["weather_advisor"]
                 ],
-                termination_strategy=TravelPlanningTerminationStrategy()
+                selection_strategy=selection_strategy,
+                termination_strategy=termination_strategy
             )
             
             try:
@@ -260,7 +301,7 @@ class TravelPlanningSystem:
             code_interpreter = CodeInterpreterTool()
             file_gen_definition = project_client.agents.create_agent(
                 model=self.config["MODEL_DEPLOYMENT_NAME"],
-                name="FileGenerationAgent",
+                name=FILE_NAME,
                 instructions="""
                 - Take a complete multi-day travel itinerary and additional adjustment suggestions (e.g., based on weather, transportation).
                 - The output should match the input language.   
