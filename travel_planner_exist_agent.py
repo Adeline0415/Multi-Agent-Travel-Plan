@@ -12,7 +12,7 @@ from azure.identity import ClientSecretCredential
 from azure.identity import DefaultAzureCredential
 from azure.ai.projects.aio import AIProjectClient as AsyncAIProjectClient  # Async version for Semantic Kernel
 from azure.ai.projects import AIProjectClient
-from azure.ai.projects.models import CodeInterpreterTool
+from azure.ai.projects.models import CodeInterpreterTool, RequiredFunctionToolCall, SubmitToolOutputsAction, ToolOutput, MessageRole
 
 # Semantic Kernel imports
 from semantic_kernel.agents import AgentGroupChat, AzureAIAgent, AzureAIAgentSettings
@@ -72,87 +72,32 @@ class TravelPlanningSystem:
         self.credential = DefaultAzureCredential()
     
     async def create_travel_planning_agents(self, client, current_date: str):
-        """Create all the agents needed for travel planning."""
-        # weather_plugin = WeatherPlugin(self.config["GEOCODING_API_KEY"])
-        # 1. Travel Planner Agent
-        planner_definition = await client.agents.create_agent(
-            model=self.config["MODEL_DEPLOYMENT_NAME"],
-            name="TravelPlannerAgent",
-            instructions=f"""
-            Today is {current_date}. You are a helpful assistant that can suggest a travel plan for a user based on their request.
-            When generating the itinerary, calculate and include the actual calendar date for each day of the trip.
-            In addition, for each destination or attraction in the itinerary, please include the specific area or neighborhood name in Tokyo 
-            (e.g., Asakusa, Shinjuku, Roppongi, Ueno, etc.).
-            """
+        """Get all the agents needed for travel planning using their IDs."""
+        
+        # 替換以下 agent IDs 為你實際的 agent IDs
+        planner_agent_id = "asst_wwPodnWABUgGwGB2iykwhjKr"
+        routemaster_agent_id = "asst_gCR5ZofV5gTWY6RkxDh3ZTlj"
+        weather_advisor_agent_id = "asst_2pXcwe5c1ZoBEe9uzwXNZs43"
+        
+        # 獲取已存在的 agent 而不是創建新的
+        planner_definition = await client.agents.get_agent(
+            agent_id=planner_agent_id
         )
         planner_agent = AzureAIAgent(client=client, definition=planner_definition)
         
-        # 2. RouteMaster Agent
-        routemaster_definition = await client.agents.create_agent(
-            model=self.config["MODEL_DEPLOYMENT_NAME"],
-            name="RouteMasterAgent",
-            instructions="""
-            你是一位擁有超過20年自由行經驗的旅遊達人，熟悉所有地鐵與JR路線，
-            精通景點動線安排、住宿推薦與行李轉移策略。你的任務是根據使用者提供的旅遊行程，
-            從專家的角度提供批判性回饋，指出潛在問題與可優化之處，並給出具體可執行的改善方案，
-            包含：每日交通順暢度、住宿選擇合理性、體力負擔與景點分布安排。
-            請特別留意以下幾點：
-            1. 避免頻繁的地鐵轉乘與跨公司轉線，例如東京Metro、都營地鐵與JR間的跳線移動，因為這會增加交通費與等待時間。
-            2. 檢查每晚飯店與當天行程之間的地理順暢性與合理距離，避免來回折返與不必要的長距離移動。
-            3. 若行程安排不夠合理，請提供具體修改建議，包含推薦替代景點、飯店名稱與順路路線，
-            確保全程以大眾交通工具為主，並盡量簡化交通移動路徑。
-            """
+        routemaster_definition = await client.agents.get_agent(
+            agent_id=routemaster_agent_id
         )
         routemaster_agent = AzureAIAgent(client=client, definition=routemaster_definition)
-
-        # 3. Weather Advisor Agent (with tools)
-        weather_advisor_definition = await client.agents.create_agent(
-            model=self.config["MODEL_DEPLOYMENT_NAME"],
-            name="WeatherAdvisorAgent",
-            instructions=f"""
-            Today is {current_date}. 你是一位擁有超過20年經驗的氣象專業知識旅遊顧問，擅長根據即時與預測天氣，
-            協助使用者動態調整每日行程安排。你的任務是：
-            1. 你**必須**使用 `get_weather_forecast` 工具根據實際地點（如：新宿、淺草、六本木、迪士尼樂園）來查詢天氣資料，不能自行假設天氣。
-            2. 請避免使用籠統的地名如「Tokyo」查詢天氣，而應以每日實際行程地點為查詢依據。
-            3. 若天氣不佳（如下雨、強風、酷暑），請建議更換為室內景點，
-            4. 若天氣良好，則可推薦戶外行程。
-            5. 請根據使用者的行程安排，提供具體的建議與替代方案，並附上天氣預報資料。
-
-            建議內容需具體、合理，並配合使用者原本的動線與住宿位置，避免增加移動成本與轉乘。
-            **Important:** You must always call the `get_weather_forecast` tool whenever you need weather information, and never fabricate weather data yourself.
-            """,
-            tools=[{
-                "type": "function",
-                "function": {
-                    "name": "get_weather_forecast",
-                    "description": "Get weather forecast for a location",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "location_name": {
-                                "type": "string",
-                                "description": "The name of the location"
-                            },
-                            "start_date": {
-                                "type": "string",
-                                "description": "Start date in YYYY-MM-DD format"
-                            },
-                            "end_date": {
-                                "type": "string",
-                                "description": "End date in YYYY-MM-DD format"
-                            }
-                        },
-                        "required": ["location_name", "start_date", "end_date"]
-                    }
-                }
-            }]
+        
+        weather_advisor_definition = await client.agents.get_agent(
+            agent_id=weather_advisor_agent_id
         )
-
         
         weather_advisor_agent = AzureAIAgent(
             client=client, 
             definition=weather_advisor_definition,
-            plugins=[self.weather_plugin]  # 在這裡添加插件
+            plugins=[self.weather_plugin]  # 仍然添加插件
         )
         
         return {
@@ -224,11 +169,9 @@ class TravelPlanningSystem:
                 
                 return final_response, urls
                     
-            finally:
-                # Cleanup
-                await chat.reset()
-                for agent in agents.values():
-                    await client.agents.delete_agent(agent.id)
+            except Exception as e:
+                print(f"Error during group chat: {e}")
+                return "An error occurred during the travel planning process.", []
     
     def run_file_generation_agent(self, group_chat_responses, current_date):
         """Synchronous version of the file generation agent"""
@@ -260,49 +203,9 @@ class TravelPlanningSystem:
         
         try:
             # Create the FileGenerationAgent
-            code_interpreter = CodeInterpreterTool()
-            file_gen_definition = project_client.agents.create_agent(
-                model=self.config["MODEL_DEPLOYMENT_NAME"],
-                name="FileGenerationAgent",
-                instructions="""
-                You are a travel plan formatter that creates beautiful HTML presentations of travel itineraries.
-                
-                Take the complete multi-day travel itinerary and additional adjustment suggestions (e.g., based on weather, transportation) from the other agents and format it into a cohesive, visually appealing HTML document.
-                
-                Your output must:
-                - Match the language of the input (Japanese/Chinese/English)
-                - Include a full HTML document with <html>, <head>, and <body> sections
-                - Insert an embedded Google Map <iframe> for each main location or day
-                - Complete multi-day travel plan included weather information, transportation suggestions, and any other relevant details (like luanch and dinner options if available)
-                - The HTML should contain every day of the trip, including the date and travel plan details each day.
-                
-                File Handling:
-                - Save the final HTML content to a file named "travel_plan.html" using the code interpreter
-                - Your code should look like:
-                ```python
-                with open('travel_plan.html', 'w', encoding='utf-8') as f:
-                    f.write(html_content)
-                print("HTML file created: travel_plan.html")
-                ```
-                
-                Style and Layout:
-                - Use clear headings and structure
-                - Use bullet points for listing places and activities
-                - Highlight important information like hotel names and transportation
-                - Include a clean, readable CSS style inside the HTML
-                
-                IMPORTANT:
-                1. First integrate all travel plan from other agents and finalize it(taking into account traffic and weather)
-                2. The final travel plan must include every day of the trip (ex: if the trip is 7 days, the plan must include 7 days, not just 3 days)
-                2. Create the complete HTML with embedded maps
-                3. Save the HTML to a file using the code interpreter
-                4. Print the EXACT file paths of any files you create
-
-                OUR FINAL RESPONSE MUST BE THE COMPLETE PLAN. When the plan is complete and all perspectives are integrated
-                CRITICAL NOTE: Your primary purpose is to create and save the HTML file. If you fail to save a proper HTML file, you have failed your mission. No exceptions.
-                """,
-                tools=code_interpreter.definitions,
-                tool_resources=code_interpreter.resources
+            # file ID
+            file_gen_definition = project_client.agents.get_agent(
+                agent_id="asst_WCHGT9oY6yLTKCmc3hLQWaL5"
             )
         
             # Create a new thread
@@ -328,10 +231,54 @@ class TravelPlanningSystem:
                 print(f"Run status: {run.status}")
                 time.sleep(2)
                 run = project_client.agents.get_run(thread_id=thread.id, run_id=run.id)
-            
+                
+                if run.status == "requires_action" and isinstance(run.required_action, SubmitToolOutputsAction):
+                    tool_calls = run.required_action.submit_tool_outputs.tool_calls
+                    if not tool_calls:
+                        print("No tool calls provided - cancelling run")
+                        project_client.agents.cancel_run(
+                            thread_id=thread.id, run_id=run.id)
+                        break
+                    
+                    tool_outputs = []
+                    for tool_call in tool_calls:
+                        if isinstance(tool_call, RequiredFunctionToolCall):
+                            function_name = tool_call.function.name
+                            function_args = json.loads(tool_call.function.arguments)
+                            
+                            print(f"Executing tool call: {function_name} with args: {function_args}")
+                            
+                            try:
+                                # 處理 DALLE 圖片生成請求
+                                if function_name == "generate_image":
+                                    prompt = function_args.get("prompt")
+                                    image_url = dalle_plugin.generate_image(prompt)
+                                    tool_outputs.append(
+                                        ToolOutput(
+                                            tool_call_id=tool_call.id,
+                                            output=image_url
+                                        )
+                                    )
+                                    print(f"Generated image URL: {image_url}")
+                                # 你可以在這裡添加對其他函數的處理
+                            except Exception as e:
+                                error_msg = f"Error executing tool_call {tool_call.id}: {e}"
+                                print(error_msg)
+                                # 可選：將錯誤消息返回給模型
+                                tool_outputs.append(
+                                    ToolOutput(
+                                        tool_call_id=tool_call.id,
+                                        output=f"Error: {str(e)}"
+                                    )
+                                )
+                    
+                    print(f"Tool outputs: {tool_outputs}")
+                    if tool_outputs:
+                        project_client.agents.submit_tool_outputs_to_run(
+                            thread_id=thread.id, run_id=run.id, tool_outputs=tool_outputs
+                        )
+                
             print(f"File Generation Agent run completed with status: {run.status}")
-            
-            # Get messages from the thread
             messages = project_client.agents.list_messages(thread_id=thread.id)
             
             # Process file path annotations and get final response
@@ -425,12 +372,9 @@ class TravelPlanningSystem:
                 
             return final_response, file_urls
         
-        finally:
-            # Clean up the agent
-            try:
-                project_client.agents.delete_agent(file_gen_definition.id)
-            except Exception as e:
-                print(f"Error deleting agent: {e}")
+        except Exception as e:
+            print(f"Error during file generation: {e}")
+            return "An error occurred during the file generation process.", []
     
     def _get_mime_type(self, extension: str) -> str:
         """Get MIME type from file extension."""
