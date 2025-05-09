@@ -135,3 +135,49 @@ class DALLEPlugin:
         except Exception as e:
             logging.error(f"DALLE image generation error: {e}")
             return f"Error generating image: {str(e)}"
+        
+class LocationPlugin:
+    """Plugin for location-related functions"""
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.definitions = [self.get_lat_long_definition()]  # Add definitions for the agent
+        
+    def get_lat_long_definition(self):
+        """Create definition for the get_lat_long function"""
+        return {
+            "type": "function",
+            "function": {
+                "name": "get_lat_long",
+                "description": "Get latitude and longitude from a location name",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location_name": {
+                            "type": "string",
+                            "description": "The name of the location"
+                        }
+                    },
+                    "required": ["location_name"]
+                }
+            }
+        }
+        
+    @kernel_function(
+        description="Get latitude and longitude from a location name",
+        name="get_lat_long"
+    )
+    def get_lat_long(self, 
+                   location_name: Annotated[str, "The name of the location"]) -> str:
+        """Get latitude and longitude from a location name."""
+        try:
+            lat, lon = get_lat_long(self.api_key, location_name)
+            return json.dumps({
+                "latitude": lat,
+                "longitude": lon,
+                "location": location_name
+            })
+        except Exception as e:
+            return json.dumps({
+                "error": str(e),
+                "location": location_name
+            })

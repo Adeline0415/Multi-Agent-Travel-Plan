@@ -27,7 +27,7 @@ import requests
 
 # Local imports
 from util import AzureBlobManager
-from tools import WeatherPlugin, DALLEPlugin
+from tools import WeatherPlugin, DALLEPlugin, LocationPlugin
 
 # Configure logging
 import logging
@@ -233,6 +233,7 @@ class TravelPlanningSystem:
     def run_file_generation_agent(self, group_chat_responses, current_date):
         """Synchronous version of the file generation agent"""
         dalle_plugin = DALLEPlugin(self.dalle_client)
+        location_plugin = LocationPlugin(self.config["GEOCODING_API_KEY"])
 
         # Create a consolidated message
         consolidated_message = "# Travel Planning Group Chat Results\n\n"
@@ -265,49 +266,57 @@ class TravelPlanningSystem:
                 model=self.config["MODEL_DEPLOYMENT_NAME"],
                 name="FileGenerationAgent",
                 instructions="""
-                You are a travel plan formatter that creates beautiful HTML presentations of travel itineraries.
-                
-                Take the complete multi-day travel itinerary and additional adjustment suggestions (e.g., based on weather, transportation) from the other agents and format it into a cohesive, visually appealing HTML document.
-                
-                Your output must:
-                - Match the language of the input (Japanese/Chinese/English)
-                - Include a full HTML document with <html>, <head>, and <body> sections
-                - Insert an embedded Google Map <iframe> for each main location or day
-                - Complete multi-day travel plan included weather information, transportation suggestions, and any other relevant details (like luanch and dinner options if available)
-                - The HTML should contain every day of the trip, including the date and travel plan details each day.
-                
-                Images:
-                - Generate ONE representative image for the ENTIRE trip based on the overall travel theme using the generate_image tool
-                - Use the image URL directly in an <img> tag, for example:
-                <img src="[image_url]" alt="Trip Cover Image" style="width:50%;height:auto;">
-                
-                File Handling:
-                - Save the final HTML content to a file named "travel_plan.html" using the code interpreter
-                - Your code should look like:
-                ```python
-                with open('travel_plan.html', 'w', encoding='utf-8') as f:
-                    f.write(html_content)
-                print("HTML file created: travel_plan.html")
-                ```
-                
-                Style and Layout:
-                - Use clear headings and structure
-                - Use bullet points for listing places and activities
-                - Highlight important information like hotel names and transportation
-                - Include a clean, readable CSS style inside the HTML
-                
-                IMPORTANT:
-                1. First integrate all travel plan from other agents and finalize it(taking into account traffic and weather)
-                2. The final travel plan must include every day of the trip (ex: if the trip is 7 days, the plan must include 7 days, not just 3 days)
-                3. Then use generate_image ONCE to create a trip cover image
-                4. Create the complete HTML with embedded maps and image
-                5. Save the HTML to a file using the code interpreter
-                6. Print the EXACT file paths of any files you create
+                - Take a complete multi-day travel itinerary and additional adjustment suggestions (e.g., based on weather, transportation).
+                - The output should match the input language.   
 
-                OUR FINAL RESPONSE MUST BE THE COMPLETE PLAN. When the plan is complete and all perspectives are integrated
-                CRITICAL NOTE: Your primary purpose is to create and save the HTML file. If you fail to save a proper HTML file, you have failed your mission. No exceptions.
+                HTML Output Requirements:
+                - Generate the travel plan as a complete HTML document, including <html>, <head>, and <body> sections. Save as a file.
+
+                - For each day in the itinerary:
+                    - **MUST** include:
+                        - Weather forecast (temperature and conditions)
+                        - Transportation types
+                        - Hotel name (bolded for emphasis)        
+                    - Use the get_lat_long(location_name) function to retrieve the latitude and longitude required for the iframe.
+                    - Then, use those coordinates to build the iframe using the following format:
+                        <iframe
+                        width="600"
+                        height="450"
+                        style="border:0"
+                        loading="lazy"
+                        allowfullscreen
+                        referrerpolicy="no-referrer-when-downgrade"
+                        src="https://www.google.com/maps?q={lat},{lon}&hl=zh-TW&output=embed">
+                        </iframe>>
+
+                Images:
+                - Use the dalle function to generate only **one** representative image should be generated for the **entire trip** based on the overall travel theme.
+                - Use the original image URL directly, **do not save it locally**.
+                - Insert the image using standard `<img src="...">` HTML syntax, for example:
+                ```html
+                <img src="https://dalleprodsec.blob.core.windows.net/your_image_path.png?...sas_token..." alt="Trip Cover Image" style="width:50%;height:auto;">
+                ```
+                File Handling:
+                - Save the final HTML content as a file, for example "travel_plan.html".
+                - Provide a Markdown download link for the file:
+                ```
+                [Download Travel Plan](sandbox:/mnt/data/travel_plan.html)
+                ```  
+
+                Style and Layout:
+                - Organize the content with clear headings:
+                - Use bullet points `<ul><li>...</li></ul>` for listing places or meals.
+                - Highlight key information like hotel names and transportation types with **bold text**.
+                - Maintain a clean, readable layout. You may optionally embed simple `<style>` CSS inside the HTML for better visuals (e.g., spacing, font-size).
+
+                PDF Generation:
+                - When generating PDFs that include Chinese content, always use built-in fonts to ensure compatibility and avoid font rendering issues.
+                - Follow these rules:
+                    - Use `canvas.Canvas()` from ReportLab to create the PDF.
+                    - Register a built-in CJK font using `UnicodeCIDFont`. Use `"STSong-Light"` as the default for Traditional Chinese.
+                    - Do NOT use external `.ttf` or `.ttc` fonts unless explicitly instructed to.
                 """,
-                tools=code_interpreter.definitions + dalle_plugin.definitions,
+                tools=code_interpreter.definitions + dalle_plugin.definitions + location_plugin.definitions,
                 tool_resources=code_interpreter.resources
             )
         
@@ -352,7 +361,7 @@ class TravelPlanningSystem:
                             print(f"Executing tool call: {function_name} with args: {function_args}")
                             
                             try:
-                                # 處理 DALLE 圖片生成請求
+                                # Handle DALLE image generation
                                 if function_name == "generate_image":
                                     prompt = function_args.get("prompt")
                                     image_url = dalle_plugin.generate_image(prompt)
@@ -363,11 +372,21 @@ class TravelPlanningSystem:
                                         )
                                     )
                                     print(f"Generated image URL: {image_url}")
-                                # 你可以在這裡添加對其他函數的處理
+                                # Handle location service requests
+                                elif function_name == "get_lat_long":
+                                    location_name = function_args.get("location_name")
+                                    location_data = location_plugin.get_lat_long(location_name)
+                                    tool_outputs.append(
+                                        ToolOutput(
+                                            tool_call_id=tool_call.id,
+                                            output=location_data
+                                        )
+                                    )
+                                    print(f"Generated location data: {location_data}")
                             except Exception as e:
                                 error_msg = f"Error executing tool_call {tool_call.id}: {e}"
                                 print(error_msg)
-                                # 可選：將錯誤消息返回給模型
+                                # Optional: Return error message to the model
                                 tool_outputs.append(
                                     ToolOutput(
                                         tool_call_id=tool_call.id,
