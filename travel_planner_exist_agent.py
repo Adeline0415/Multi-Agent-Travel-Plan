@@ -27,7 +27,7 @@ import requests
 
 # Local imports
 from util import AzureBlobManager
-from tools import WeatherPlugin, DALLEPlugin
+from tools import WeatherPlugin, DALLEPlugin, LocationPlugin
 
 # Configure logging
 import logging
@@ -160,7 +160,6 @@ class TravelPlanningSystem:
                     "content": instruction
                 })
                     
-                print("Group chat responses:", group_chat_responses)
                 # Now create the FileGenerationAgent outside the group chat
                 final_response, urls = self.run_file_generation_agent(
                     group_chat_responses, 
@@ -176,6 +175,7 @@ class TravelPlanningSystem:
     def run_file_generation_agent(self, group_chat_responses, current_date):
         """Synchronous version of the file generation agent"""
         dalle_plugin = DALLEPlugin(self.dalle_client)
+        location_plugin = LocationPlugin(self.config["GEOCODING_API_KEY"])
 
         # Create a consolidated message
         consolidated_message = "# Travel Planning Group Chat Results\n\n"
@@ -191,7 +191,6 @@ class TravelPlanningSystem:
             elif role == "tool":
                 consolidated_message += f"## Tool Response\n{content}\n\n"
 
-            print(f"Consolidated message: {consolidated_message}")
         # Create synchronous AI Project client
         project_client = AIProjectClient(
             endpoint=self.config["AIPROJECT_ENDPOINT"],
@@ -249,7 +248,7 @@ class TravelPlanningSystem:
                             print(f"Executing tool call: {function_name} with args: {function_args}")
                             
                             try:
-                                # 處理 DALLE 圖片生成請求
+                                # Handle image generation requests
                                 if function_name == "generate_image":
                                     prompt = function_args.get("prompt")
                                     image_url = dalle_plugin.generate_image(prompt)
@@ -260,7 +259,17 @@ class TravelPlanningSystem:
                                         )
                                     )
                                     print(f"Generated image URL: {image_url}")
-                                # 你可以在這裡添加對其他函數的處理
+                                # Handle location service requests
+                                elif function_name == "get_lat_long":
+                                    location_name = function_args.get("location_name")
+                                    location_data = location_plugin.get_lat_long(location_name)
+                                    tool_outputs.append(
+                                        ToolOutput(
+                                            tool_call_id=tool_call.id,
+                                            output=location_data
+                                        )
+                                    )
+                                    print(f"Generated location data: {location_data}")
                             except Exception as e:
                                 error_msg = f"Error executing tool_call {tool_call.id}: {e}"
                                 print(error_msg)

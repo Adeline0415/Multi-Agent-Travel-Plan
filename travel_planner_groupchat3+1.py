@@ -214,8 +214,7 @@ class TravelPlanningSystem:
                     "role": "user",
                     "content": instruction
                 })
-                    
-                print("Group chat responses:", group_chat_responses)
+                
                 # Now create the FileGenerationAgent outside the group chat
                 final_response, urls = self.run_file_generation_agent(
                     group_chat_responses, 
@@ -225,10 +224,7 @@ class TravelPlanningSystem:
                 return final_response, urls
                     
             finally:
-                # Cleanup
-                await chat.reset()
-                for agent in agents.values():
-                    await client.agents.delete_agent(agent.id)
+                print("Completed travel planning run")
     
     def run_file_generation_agent(self, group_chat_responses, current_date):
         """Synchronous version of the file generation agent"""
@@ -249,7 +245,7 @@ class TravelPlanningSystem:
             elif role == "tool":
                 consolidated_message += f"## Tool Response\n{content}\n\n"
 
-            print(f"Consolidated message: {consolidated_message}")
+        print(f"Consolidated message: {consolidated_message}")
         # Create synchronous AI Project client
         project_client = AIProjectClient(
             endpoint=self.config["AIPROJECT_ENDPOINT"],
@@ -495,11 +491,7 @@ class TravelPlanningSystem:
             return final_response, file_urls
         
         finally:
-            # Clean up the agent
-            try:
-                project_client.agents.delete_agent(file_gen_definition.id)
-            except Exception as e:
-                print(f"Error deleting agent: {e}")
+            print("completed run for file generation agent")
     
     def _get_mime_type(self, extension: str) -> str:
         """Get MIME type from file extension."""
